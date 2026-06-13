@@ -181,4 +181,11 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
 - 2026-06-13: Local full contract suite passed against filesystem backend:
   - command used: `GREADER_BASE_URL=http://127.0.0.1:3102/api/greader.php GREADER_USER=alice GREADER_PASSWORD=secret GREADER_TIMEOUT_MS=20000 GREADER_INGESTION_TIMEOUT_MS=20000 GREADER_INGESTION_POLL_MS=1000 npm --prefix ../google-reader-api-tests test`
   - result: 31 pass, 0 fail.
-- Next: clean up local backend abstractions, harden crawler/parser, then add DynamoDB Local metadata backend before OpenTofu/AWS work.
+- 2026-06-13: Added metadata storage backend selector and DynamoDB metadata backend using `@aws-sdk/client-dynamodb` + `@aws-sdk/lib-dynamodb`.
+- 2026-06-13: Added `docker-compose.yml` for official `amazon/dynamodb-local` in `-inMemory -sharedDb` mode and `scripts/create-dynamodb-table.js`.
+- 2026-06-13: DynamoDB Local full contract suite passed:
+  - setup: `docker compose up -d dynamodb && npm run db:create`
+  - server: `LESSRSS_STORAGE=dynamodb DYNAMODB_ENDPOINT=http://127.0.0.1:8000 LESSRSS_DATA_DIR=$PWD/.local-data-ddb-test GREADER_USER=alice GREADER_PASSWORD=secret PORT=3104 node src/local-server.js`
+  - tests: `GREADER_BASE_URL=http://127.0.0.1:3104/api/greader.php GREADER_USER=alice GREADER_PASSWORD=secret GREADER_TIMEOUT_MS=20000 GREADER_INGESTION_TIMEOUT_MS=20000 GREADER_INGESTION_POLL_MS=1000 npm --prefix ../google-reader-api-tests test`
+  - result: 31 pass, 0 fail.
+- Next: replace DynamoDB backend scan-heavy internals with the intended stream/index rows, then start OpenTofu/AWS resources.
