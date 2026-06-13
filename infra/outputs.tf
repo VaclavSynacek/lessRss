@@ -1,10 +1,10 @@
 output "greader_base_url" {
   description = "Base URL for GREADER_BASE_URL."
-  value       = "${aws_apigatewayv2_api.api.api_endpoint}/api/greader.php"
+  value       = "${aws_lambda_function_url.api.function_url}api/greader.php"
 }
 
 output "api_endpoint" {
-  value = aws_apigatewayv2_api.api.api_endpoint
+  value = aws_lambda_function_url.api.function_url
 }
 
 output "dynamodb_table" {
