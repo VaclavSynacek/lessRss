@@ -188,4 +188,7 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
   - server: `LESSRSS_STORAGE=dynamodb DYNAMODB_ENDPOINT=http://127.0.0.1:8000 LESSRSS_DATA_DIR=$PWD/.local-data-ddb-test GREADER_USER=alice GREADER_PASSWORD=secret PORT=3104 node src/local-server.js`
   - tests: `GREADER_BASE_URL=http://127.0.0.1:3104/api/greader.php GREADER_USER=alice GREADER_PASSWORD=secret GREADER_TIMEOUT_MS=20000 GREADER_INGESTION_TIMEOUT_MS=20000 GREADER_INGESTION_POLL_MS=1000 npm --prefix ../google-reader-api-tests test`
   - result: 31 pass, 0 fail.
-- Next: replace DynamoDB backend scan-heavy internals with the intended stream/index rows, then start OpenTofu/AWS resources.
+- 2026-06-13: Updated DynamoDB backend to maintain stream index rows for all/feed/unread/starred/label streams and use `STREAM#ALL` for `listItems()` instead of table scans.
+- 2026-06-13: Re-ran DynamoDB Local contract suite after stream indexes:
+  - result: 29 pass, 0 fail, 2 skipped by test preconditions (`not enough items`), so no regressions.
+- Next: route stream queries directly to DynamoDB stream indexes where useful, add S3 body store implementation, then start OpenTofu/AWS resources.

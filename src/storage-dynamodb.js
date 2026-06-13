@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { GetCommand, PutCommand, QueryCommand, ScanCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { documentClient, tableName } = require('./dynamodb-client');
 
 const ddb = documentClient();
@@ -77,13 +77,12 @@ async function getAnySubscription(feedId) {
 }
 
 async function listItems() {
-  const rows = await scanAll({
+  const rows = await queryAll({
     TableName,
-    FilterExpression: '#entity = :entity',
-    ExpressionAttributeNames: { '#entity': 'entity' },
-    ExpressionAttributeValues: { ':entity': 'item' },
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': 'STREAM#ALL' },
   });
-  return rows.map(stripKeys);
+  return getItems(rows.map((row) => row.itemId));
 }
 
 async function getItems(ids) {
@@ -98,10 +97,11 @@ async function getItems(ids) {
 
 async function updateItems(mutator) {
   const current = await listItems();
+  const oldById = Object.fromEntries(current.map((it) => [String(it.itemId), structuredClone(it)]));
   const items = Object.fromEntries(current.map((it) => [String(it.itemId), it]));
   const result = await mutator(items, { items });
   for (const it of Object.values(items)) {
-    await putEntity('ITEM#' + it.itemId, 'META', 'item', it);
+    await putItemWithIndexes(oldById[String(it.itemId)], it);
   }
   return result;
 }
@@ -121,12 +121,49 @@ async function upsertItem(feedId, fields) {
     labels: old.labels || [],
     updatedAt: Date.now(),
   };
-  await putEntity('ITEM#' + itemId, 'META', 'item', item);
+  await putItemWithIndexes(old, item);
   return item;
+}
+
+async function putItemWithIndexes(oldItem, item) {
+  for (const key of indexKeys(oldItem || {})) await deleteKey(key.PK, key.SK);
+  await putEntity('ITEM#' + item.itemId, 'META', 'item', item);
+  for (const key of indexKeys(item)) {
+    await ddb.send(new PutCommand({ TableName, Item: { ...key, entity: 'streamItem', itemId: String(item.itemId), feedId: item.feedId } }));
+  }
 }
 
 async function putEntity(PK, SK, entity, value) {
   await ddb.send(new PutCommand({ TableName, Item: { ...value, PK, SK, entity } }));
+}
+
+async function deleteKey(PK, SK) {
+  if (!PK || !SK) return;
+  await ddb.send(new DeleteCommand({ TableName, Key: { PK, SK } }));
+}
+
+function indexKeys(item) {
+  if (!item || !item.itemId) return [];
+  const sk = indexSortKey(item);
+  const keys = [
+    { PK: 'STREAM#ALL', SK: sk },
+    { PK: 'STREAM#FEED#' + item.feedId, SK: sk },
+  ];
+  if (!item.read) {
+    keys.push({ PK: 'STREAM#UNREAD', SK: sk });
+    keys.push({ PK: 'STREAM#FEED#' + item.feedId + '#UNREAD', SK: sk });
+  }
+  if (item.starred) keys.push({ PK: 'STREAM#STARRED', SK: sk });
+  for (const label of item.labels || []) keys.push({ PK: 'STREAM#LABEL#' + label, SK: sk });
+  return keys;
+}
+
+function indexSortKey(item) {
+  const max = 9999999999999999n;
+  let ts;
+  try { ts = BigInt(String(item.publishedUsec || 0)); } catch { ts = 0n; }
+  const rev = max - ts;
+  return rev.toString().padStart(16, '0') + '#' + item.itemId;
 }
 
 function stripKeys(row) {
@@ -145,20 +182,6 @@ async function queryAll(input) {
   return out;
 }
 
-async function scanAll(input) {
-  const out = [];
-  let ExclusiveStartKey;
-  do {
-    const res = await dynamodbScan({ ...input, ExclusiveStartKey });
-    out.push(...(res.Items || []));
-    ExclusiveStartKey = res.LastEvaluatedKey;
-  } while (ExclusiveStartKey);
-  return out;
-}
-
-async function dynamodbScan(input) {
-  return ddb.send(new ScanCommand(input));
-}
 
 module.exports = {
   listSubscriptions,
