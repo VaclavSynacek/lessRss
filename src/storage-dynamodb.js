@@ -85,6 +85,20 @@ async function listItems() {
   return getItems(rows.map((row) => row.itemId));
 }
 
+async function listStreamItems(streamId, opts = {}) {
+  const pk = streamPk(streamId, opts);
+  let rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': pk },
+    ScanIndexForward: opts.order === 'o' ? false : true,
+  });
+  let items = await getItems(rows.map((row) => row.itemId));
+  items = filterPostQuery(items, streamId, opts);
+  const limit = Number(opts.limit || 20);
+  return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
+}
+
 async function getItems(ids) {
   const normalized = ids.map(normalizeItemId);
   const out = [];
@@ -166,6 +180,27 @@ function indexSortKey(item) {
   return rev.toString().padStart(16, '0') + '#' + item.itemId;
 }
 
+function streamPk(streamId, opts = {}) {
+  if (opts.excludeRead) {
+    if (streamId && streamId.startsWith('feed/')) return 'STREAM#FEED#' + streamId.slice(5) + '#UNREAD';
+    if (streamId === 'user/-/state/com.google/reading-list') return 'STREAM#UNREAD';
+  }
+  if (streamId === 'user/-/state/com.google/starred') return 'STREAM#STARRED';
+  if (streamId && streamId.startsWith('feed/')) return 'STREAM#FEED#' + streamId.slice(5);
+  if (streamId && streamId.startsWith('user/-/label/')) return 'STREAM#LABEL#' + streamId.slice('user/-/label/'.length);
+  return 'STREAM#ALL';
+}
+
+function filterPostQuery(items, streamId, opts = {}) {
+  if (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) {
+    items = items.filter((it) => !it.read);
+  }
+  if (opts.includeStarred && streamId !== 'user/-/state/com.google/starred') items = items.filter((it) => it.starred);
+  if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > Number(opts.ot) * 1000000);
+  if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < Number(opts.nt) * 1000000);
+  return items;
+}
+
 function stripKeys(row) {
   const { PK, SK, entity, ...rest } = row;
   return rest;
@@ -190,6 +225,7 @@ module.exports = {
   subscribe,
   unsubscribe,
   listItems,
+  listStreamItems,
   getItems,
   updateItems,
   upsertItem,

@@ -191,4 +191,11 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
 - 2026-06-13: Updated DynamoDB backend to maintain stream index rows for all/feed/unread/starred/label streams and use `STREAM#ALL` for `listItems()` instead of table scans.
 - 2026-06-13: Re-ran DynamoDB Local contract suite after stream indexes:
   - result: 29 pass, 0 fail, 2 skipped by test preconditions (`not enough items`), so no regressions.
-- Next: route stream queries directly to DynamoDB stream indexes where useful, add S3 body store implementation, then start OpenTofu/AWS resources.
+- 2026-06-13: Added `listStreamItems()` storage API and routed stream reads through it. DynamoDB backend now queries stream index partitions directly for API stream reads instead of going through a generic full item listing.
+- 2026-06-13: Split body storage into selectable backends with `LESSRSS_BODY_STORE=fs|s3`; added S3 implementation using `@aws-sdk/client-s3` while keeping filesystem as local default.
+- 2026-06-13: Added explicit crawler Lambda-style entrypoint `src/crawler-handler.js` plus `npm run refresh` for local/manual refresh.
+- 2026-06-13: Hardened filesystem metadata writes with an in-process write lock to prevent local concurrent test requests from clobbering state.
+- 2026-06-13: Re-ran contract tests:
+  - filesystem backend: 31 pass, 0 fail;
+  - DynamoDB Local backend with direct stream index reads: 29 pass, 0 fail, 2 skipped by empty/precondition checks.
+- Next: OpenTofu/AWS resources. Stop and ask for valid AWS credentials before AWS deploy/test work.

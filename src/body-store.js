@@ -1,25 +1,14 @@
 'use strict';
 
-const fs = require('node:fs/promises');
-const path = require('node:path');
+const backendName = (process.env.LESSRSS_BODY_STORE || 'fs').toLowerCase();
 
-const DATA_DIR = process.env.LESSRSS_DATA_DIR || path.join(process.cwd(), '.local-data');
-const BODY_ROOT = path.join(DATA_DIR, 'bodies');
-
-async function putBody(key, value) {
-  const file = path.join(BODY_ROOT, key);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(value, null, 2));
+let backend;
+if (backendName === 's3') {
+  backend = require('./body-store-s3');
+} else if (backendName === 'fs' || backendName === 'filesystem') {
+  backend = require('./body-store-fs');
+} else {
+  throw new Error(`Unknown LESSRSS_BODY_STORE backend: ${backendName}`);
 }
 
-async function getBody(key) {
-  if (!key) return null;
-  try {
-    return JSON.parse(await fs.readFile(path.join(BODY_ROOT, key), 'utf8'));
-  } catch (e) {
-    if (e.code === 'ENOENT') return null;
-    throw e;
-  }
-}
-
-module.exports = { putBody, getBody };
+module.exports = backend;

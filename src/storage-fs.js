@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 
 const DATA_DIR = process.env.LESSRSS_DATA_DIR || path.join(process.cwd(), '.local-data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+let writeChain = Promise.resolve();
 
 function emptyState() {
   return {
@@ -59,32 +60,36 @@ async function getSubscription(feedId) {
 }
 
 async function subscribe(url, title) {
-  const state = await loadState();
-  const feedId = feedIdFor(url);
-  const existing = state.subscriptions[feedId] || {};
-  state.subscriptions[feedId] = {
-    feedId,
-    id: 'feed/' + feedId,
-    url,
-    title: title || existing.title || url,
-    htmlUrl: existing.htmlUrl || url,
-    categories: existing.categories || [],
-    active: true,
-    createdAt: existing.createdAt || Date.now(),
-    updatedAt: Date.now(),
-  };
-  await saveState(state);
-  return state.subscriptions[feedId];
+  return withWriteLock(async () => {
+    const state = await loadState();
+    const feedId = feedIdFor(url);
+    const existing = state.subscriptions[feedId] || {};
+    state.subscriptions[feedId] = {
+      feedId,
+      id: 'feed/' + feedId,
+      url,
+      title: title || existing.title || url,
+      htmlUrl: existing.htmlUrl || url,
+      categories: existing.categories || [],
+      active: true,
+      createdAt: existing.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+    await saveState(state);
+    return state.subscriptions[feedId];
+  });
 }
 
 async function unsubscribe(streamId) {
-  const feedId = String(streamId || '').replace(/^feed\//, '');
-  const state = await loadState();
-  if (state.subscriptions[feedId]) {
-    state.subscriptions[feedId].active = false;
-    state.subscriptions[feedId].updatedAt = Date.now();
-    await saveState(state);
-  }
+  return withWriteLock(async () => {
+    const feedId = String(streamId || '').replace(/^feed\//, '');
+    const state = await loadState();
+    if (state.subscriptions[feedId]) {
+      state.subscriptions[feedId].active = false;
+      state.subscriptions[feedId].updatedAt = Date.now();
+      await saveState(state);
+    }
+  });
 }
 
 async function listItems() {
@@ -92,10 +97,39 @@ async function listItems() {
   return Object.values(state.items);
 }
 
+async function listStreamItems(streamId, opts = {}) {
+  let items = await listItems();
+  items = filterStreamItems(items, streamId, opts);
+  items = sortStreamItems(items, opts.order);
+  const limit = Number(opts.limit || 20);
+  return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
+}
+
 async function getItems(ids) {
   const state = await loadState();
   const idSet = new Set(ids.map(normalizeItemId));
   return Object.values(state.items).filter((it) => idSet.has(String(it.itemId)));
+}
+
+function filterStreamItems(items, streamId, opts = {}) {
+  if (streamId === 'user/-/state/com.google/starred') items = items.filter((it) => it.starred);
+  else if (streamId && streamId.startsWith('feed/')) items = items.filter((it) => it.feedId === streamId.slice(5));
+  else if (streamId && streamId.startsWith('user/-/label/')) {
+    const label = streamId.slice('user/-/label/'.length);
+    items = items.filter((it) => (it.labels || []).includes(label));
+  }
+  if (opts.excludeRead) items = items.filter((it) => !it.read);
+  if (opts.includeStarred) items = items.filter((it) => it.starred);
+  if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > Number(opts.ot) * 1000000);
+  if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < Number(opts.nt) * 1000000);
+  return items;
+}
+
+function sortStreamItems(items, order) {
+  const copy = [...items];
+  copy.sort((a, b) => Number(b.publishedUsec || 0) - Number(a.publishedUsec || 0));
+  if (order === 'o') copy.reverse();
+  return copy;
 }
 
 function normalizeItemId(id) {
@@ -106,29 +140,39 @@ function normalizeItemId(id) {
 }
 
 async function updateItems(mutator) {
-  const state = await loadState();
-  const result = await mutator(state.items, state);
-  await saveState(state);
-  return result;
+  return withWriteLock(async () => {
+    const state = await loadState();
+    const result = await mutator(state.items, state);
+    await saveState(state);
+    return result;
+  });
 }
 
 async function upsertItem(feedId, fields) {
-  const state = await loadState();
-  const itemId = itemIdFor(feedId, fields.guid || fields.url || fields.title);
-  const old = state.items[itemId] || {};
-  state.items[itemId] = {
-    ...old,
-    ...fields,
-    itemId,
-    itemHex: BigInt(itemId).toString(16).padStart(16, '0'),
-    feedId,
-    read: old.read === undefined ? false : old.read,
-    starred: old.starred || false,
-    labels: old.labels || [],
-    updatedAt: Date.now(),
-  };
-  await saveState(state);
-  return state.items[itemId];
+  return withWriteLock(async () => {
+    const state = await loadState();
+    const itemId = itemIdFor(feedId, fields.guid || fields.url || fields.title);
+    const old = state.items[itemId] || {};
+    state.items[itemId] = {
+      ...old,
+      ...fields,
+      itemId,
+      itemHex: BigInt(itemId).toString(16).padStart(16, '0'),
+      feedId,
+      read: old.read === undefined ? false : old.read,
+      starred: old.starred || false,
+      labels: old.labels || [],
+      updatedAt: Date.now(),
+    };
+    await saveState(state);
+    return state.items[itemId];
+  });
+}
+
+function withWriteLock(fn) {
+  const run = writeChain.then(fn, fn);
+  writeChain = run.catch(() => {});
+  return run;
 }
 
 module.exports = {
@@ -140,6 +184,7 @@ module.exports = {
   subscribe,
   unsubscribe,
   listItems,
+  listStreamItems,
   getItems,
   updateItems,
   upsertItem,

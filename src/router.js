@@ -166,6 +166,16 @@ async function streamItemsContents(req) {
 }
 
 async function selectItems(streamId, params) {
+  const opts = {
+    limit: Number(params.get('n') || 20),
+    order: params.get('r') || 'd',
+    excludeRead: params.get('xt') === STATE.READ,
+    includeStarred: params.get('it') === STATE.STARRED,
+    ot: Number(params.get('ot') || 0),
+    nt: Number(params.get('nt') || 0),
+  };
+  if (storage.listStreamItems) return storage.listStreamItems(streamId, opts);
+
   let items = await storage.listItems();
   if (streamId === STATE.STARRED) items = items.filter((it) => it.starred);
   else if (streamId.startsWith('feed/')) items = items.filter((it) => it.feedId === streamId.slice(5));
@@ -173,15 +183,12 @@ async function selectItems(streamId, params) {
     const label = streamId.slice('user/-/label/'.length);
     items = items.filter((it) => (it.labels || []).includes(label));
   }
-  if (params.get('xt') === STATE.READ) items = items.filter((it) => !it.read);
-  if (params.get('it') === STATE.STARRED) items = items.filter((it) => it.starred);
-  const ot = Number(params.get('ot') || 0);
-  const nt = Number(params.get('nt') || 0);
-  if (ot) items = items.filter((it) => Number(it.publishedUsec || 0) > ot * 1000000);
-  if (nt) items = items.filter((it) => Number(it.publishedUsec || 0) < nt * 1000000);
-  items = sortItems(items, params.get('r'));
-  const n = Number(params.get('n') || 20);
-  return items.slice(0, Number.isFinite(n) && n > 0 ? n : 20);
+  if (opts.excludeRead) items = items.filter((it) => !it.read);
+  if (opts.includeStarred) items = items.filter((it) => it.starred);
+  if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > opts.ot * 1000000);
+  if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < opts.nt * 1000000);
+  items = sortItems(items, opts.order);
+  return items.slice(0, Number.isFinite(opts.limit) && opts.limit > 0 ? opts.limit : 20);
 }
 
 async function editTag(req) {
