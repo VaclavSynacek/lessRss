@@ -202,4 +202,8 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
 - 2026-06-13: Added Lambda package build script and validated OpenTofu locally with `tofu -chdir=infra init -backend=false` and `tofu -chdir=infra validate`.
 - 2026-06-13: Confirmed AWS caller identity is available in the shell. Deployment is blocked only on choosing/providing GReader API credentials as OpenTofu variables (`TF_VAR_greader_user`, `TF_VAR_greader_password`, optional `TF_VAR_auth_secret`).
 - 2026-06-13: Replaced API Gateway with Lambda Function URL; API Gateway is unnecessary for this single-user app because GReader auth is handled in application code and Function URL supports the needed path routing.
-- Next: run `tofu plan`, then ask for explicit approval before `tofu apply` because it will modify AWS resources.
+- 2026-06-13: Deployed a temporary AWS test stack with dummy GReader credentials after explicit approval.
+- 2026-06-13: Lambda Function URL initially returned AWS 403 despite `authorization_type = NONE`; fixed by adding Lambda URL resource policy permissions for both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`.
+- 2026-06-13: AWS contract suite passed with ingestion skipped: 24 pass, 0 fail, 7 skipped. Skips are expected because AWS Lambda cannot reach the local contract feed server and the remote state had no persistent feed items after cleanup.
+- 2026-06-13: Destroyed the temporary AWS test stack after explicit request. Future AWS ingestion testing should be done from an EC2-hosted test runner or another environment where the feed fixture is reachable by Lambda.
+- Next: in a future AWS session, deploy again and run ingestion tests from EC2 or with a public/tunneled feed fixture.

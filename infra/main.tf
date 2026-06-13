@@ -172,6 +172,21 @@ resource "aws_lambda_function_url" "api" {
   authorization_type = "NONE"
 }
 
+resource "aws_lambda_permission" "function_url" {
+  statement_id           = "AllowPublicFunctionUrlInvoke"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.api.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+resource "aws_lambda_permission" "function_url_invoke" {
+  statement_id  = "AllowPublicFunctionUrlInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.api.function_name
+  principal     = "*"
+}
+
 resource "aws_cloudwatch_event_rule" "crawler" {
   name                = "${local.name_suffix}-crawler"
   schedule_expression = var.crawler_schedule_expression

@@ -7,3 +7,4 @@ build/
 infra/.terraform/
 infra/terraform.tfstate*
 infra/*.tfvars
+infra/tfplan*
