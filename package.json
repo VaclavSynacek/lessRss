@@ -1,0 +1,13 @@
+{
+  "name": "lessrss",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node src/local-server.js",
+    "test:contract": "GREADER_BASE_URL=${GREADER_BASE_URL:-http://127.0.0.1:3000/api/greader.php} npm --prefix ../google-reader-api-tests test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
