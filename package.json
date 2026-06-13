@@ -8,6 +8,7 @@
     "dev:ddb": "LESSRSS_STORAGE=dynamodb DYNAMODB_ENDPOINT=${DYNAMODB_ENDPOINT:-http://127.0.0.1:8000} AWS_REGION=${AWS_REGION:-local} AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-dummy} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-dummy} node src/local-server.js",
     "db:create": "DYNAMODB_ENDPOINT=${DYNAMODB_ENDPOINT:-http://127.0.0.1:8000} AWS_REGION=${AWS_REGION:-local} AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-dummy} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-dummy} node scripts/create-dynamodb-table.js",
     "refresh": "node src/crawler-handler.js",
+    "build:lambda": "node scripts/build-lambda.js",
     "test:contract": "GREADER_BASE_URL=${GREADER_BASE_URL:-http://127.0.0.1:3000/api/greader.php} npm --prefix ../google-reader-api-tests test"
   },
   "engines": {

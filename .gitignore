@@ -3,3 +3,7 @@ node_modules/
 .local-data-*/
 .env
 *.log
+build/
+infra/.terraform/
+infra/terraform.tfstate*
+infra/*.tfvars

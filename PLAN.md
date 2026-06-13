@@ -198,4 +198,7 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
 - 2026-06-13: Re-ran contract tests:
   - filesystem backend: 31 pass, 0 fail;
   - DynamoDB Local backend with direct stream index reads: 29 pass, 0 fail, 2 skipped by empty/precondition checks.
-- Next: OpenTofu/AWS resources. Stop and ask for valid AWS credentials before AWS deploy/test work.
+- 2026-06-13: Added OpenTofu AWS configuration for DynamoDB, S3 body bucket, API Lambda, crawler Lambda, API Gateway HTTP API, EventBridge schedule, IAM, logs, and outputs.
+- 2026-06-13: Added Lambda package build script and validated OpenTofu locally with `tofu -chdir=infra init -backend=false` and `tofu -chdir=infra validate`.
+- 2026-06-13: Confirmed AWS caller identity is available in the shell. Deployment is blocked only on choosing/providing GReader API credentials as OpenTofu variables (`TF_VAR_greader_user`, `TF_VAR_greader_password`, optional `TF_VAR_auth_secret`).
+- Next: run `tofu plan`, then ask for explicit approval before `tofu apply` because it will modify AWS resources.
