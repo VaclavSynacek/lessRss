@@ -12,7 +12,7 @@ async function route(req) {
   const path = stripBase(url.pathname);
 
   if (path === '/accounts/ClientLogin' && req.method === 'POST') {
-    const form = formParams(req.body || '');
+    const form = loginParams(req);
     if (!validateLogin(form.Email, form.Passwd)) return unauthorized();
     return text(200, loginResponse(form.Email));
   }
@@ -53,6 +53,15 @@ function stripBase(path) {
 function requireJson(url) {
   const output = url.searchParams.get('output');
   return output && output !== 'json' ? text(501, 'Only JSON output is implemented') : null;
+}
+
+function loginParams(req) {
+  const out = formParams(req.body || '');
+  const query = new URLSearchParams(req.rawQueryString || '');
+  for (const key of ['Email', 'Passwd', 'service', 'accountType']) {
+    if (out[key] === undefined && query.has(key)) out[key] = query.get(key);
+  }
+  return out;
 }
 
 function userInfo() {
