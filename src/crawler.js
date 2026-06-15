@@ -6,11 +6,9 @@ const { putBody } = require('./body-store');
 
 async function refreshAll() {
   const subs = await storage.listSubscriptions();
-  const results = [];
-  for (const sub of subs) {
-    results.push(await refreshSubscription(sub).catch((e) => ({ feedId: sub.feedId, ok: false, error: e.message })));
-  }
-  return results;
+  return mapLimit(subs, crawlerConcurrency(), (sub) => (
+    refreshSubscription(sub).catch((e) => ({ feedId: sub.feedId, ok: false, error: e.message }))
+  ));
 }
 
 async function refreshSubscription(sub) {
@@ -19,12 +17,17 @@ async function refreshSubscription(sub) {
   if (sub.etag) headers['If-None-Match'] = sub.etag;
   if (sub.lastModified) headers['If-Modified-Since'] = sub.lastModified;
 
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), feedTimeoutMs());
   let res;
   try {
-    res = await fetch(sub.url, { headers });
+    res = await fetch(sub.url, { headers, signal: ctrl.signal });
   } catch (e) {
-    await updateFetchState(sub.feedId, { lastFetchAt: now, lastError: e.message });
-    throw e;
+    const message = e.name === 'AbortError' ? `fetch timeout after ${feedTimeoutMs()}ms` : e.message;
+    await updateFetchState(sub.feedId, { lastFetchAt: now, lastError: message });
+    throw new Error(message);
+  } finally {
+    clearTimeout(timer);
   }
 
   if (res.status === 304) {
@@ -115,6 +118,30 @@ function hashJson(value) {
 
 async function updateFetchState(feedId, patch) {
   if (storage.updateSubscriptionFetchState) await storage.updateSubscriptionFetchState(feedId, patch);
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      out[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+function crawlerConcurrency() {
+  const n = Number(process.env.LESSRSS_CRAWLER_CONCURRENCY || 5);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 5;
+}
+
+function feedTimeoutMs() {
+  const n = Number(process.env.LESSRSS_FEED_TIMEOUT_MS || 30000);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000;
 }
 
 function parseFeed(xml) {

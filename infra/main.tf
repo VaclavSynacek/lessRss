@@ -122,14 +122,16 @@ data "archive_file" "lambda" {
 
 locals {
   lambda_env = {
-    LESSRSS_STORAGE     = "dynamodb"
-    LESSRSS_DDB_TABLE   = aws_dynamodb_table.main.name
-    LESSRSS_BODY_STORE  = "s3"
-    LESSRSS_BODY_BUCKET = aws_s3_bucket.bodies.bucket
-    GREADER_USER        = var.greader_user
-    GREADER_PASSWORD    = var.greader_password
-    LESSRSS_AUTH_SECRET = local.auth_secret
-    NODE_OPTIONS        = "--enable-source-maps"
+    LESSRSS_STORAGE             = "dynamodb"
+    LESSRSS_DDB_TABLE           = aws_dynamodb_table.main.name
+    LESSRSS_BODY_STORE          = "s3"
+    LESSRSS_BODY_BUCKET         = aws_s3_bucket.bodies.bucket
+    LESSRSS_CRAWLER_CONCURRENCY = tostring(var.crawler_concurrency)
+    LESSRSS_FEED_TIMEOUT_MS     = tostring(var.crawler_feed_timeout_ms)
+    GREADER_USER                = var.greader_user
+    GREADER_PASSWORD            = var.greader_password
+    LESSRSS_AUTH_SECRET         = local.auth_secret
+    NODE_OPTIONS                = "--enable-source-maps"
   }
 }
 

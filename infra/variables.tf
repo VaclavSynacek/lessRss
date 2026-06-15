@@ -35,7 +35,19 @@ variable "lambda_timeout_seconds" {
 
 variable "crawler_timeout_seconds" {
   type    = number
-  default = 300
+  default = 600
+}
+
+variable "crawler_feed_timeout_ms" {
+  type        = number
+  description = "Per-feed crawler fetch timeout in milliseconds."
+  default     = 30000
+}
+
+variable "crawler_concurrency" {
+  type        = number
+  description = "Maximum number of feeds crawled concurrently."
+  default     = 5
 }
 
 variable "lambda_memory_mb" {
