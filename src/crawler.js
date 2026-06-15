@@ -1,10 +1,11 @@
 'use strict';
 
-const { listSubscriptions, upsertItem } = require('./storage');
+const crypto = require('node:crypto');
+const storage = require('./storage');
 const { putBody } = require('./body-store');
 
 async function refreshAll() {
-  const subs = await listSubscriptions();
+  const subs = await storage.listSubscriptions();
   const results = [];
   for (const sub of subs) {
     results.push(await refreshSubscription(sub).catch((e) => ({ feedId: sub.feedId, ok: false, error: e.message })));
@@ -13,41 +14,107 @@ async function refreshAll() {
 }
 
 async function refreshSubscription(sub) {
-  const res = await fetch(sub.url, { headers: { 'User-Agent': 'lessRss/0.1' } });
-  if (!res.ok) throw new Error(`fetch ${sub.url} HTTP ${res.status}`);
+  const now = Date.now();
+  const headers = { 'User-Agent': 'lessRss/0.1' };
+  if (sub.etag) headers['If-None-Match'] = sub.etag;
+  if (sub.lastModified) headers['If-Modified-Since'] = sub.lastModified;
+
+  let res;
+  try {
+    res = await fetch(sub.url, { headers });
+  } catch (e) {
+    await updateFetchState(sub.feedId, { lastFetchAt: now, lastError: e.message });
+    throw e;
+  }
+
+  if (res.status === 304) {
+    await updateFetchState(sub.feedId, { lastFetchAt: now, lastStatus: 304, lastError: '' });
+    return { feedId: sub.feedId, ok: true, count: 0, skipped: 0, notModified: true };
+  }
+
+  if (!res.ok) {
+    const message = `fetch ${sub.url} HTTP ${res.status}`;
+    await updateFetchState(sub.feedId, { lastFetchAt: now, lastStatus: res.status, lastError: message });
+    throw new Error(message);
+  }
+
   const xml = await res.text();
   const parsed = parseFeed(xml);
   let count = 0;
+  let skipped = 0;
   for (const parsedItem of parsed.items) {
-    const guid = parsedItem.guid || parsedItem.link || parsedItem.title;
-    if (!guid) continue;
-    const publishedMs = parsedItem.pubDate ? Date.parse(parsedItem.pubDate) : Date.now();
-    const item = await upsertItem(sub.feedId, {
-      guid,
-      url: parsedItem.link || '',
-      title: parsedItem.title || '',
-      author: parsedItem.author || '',
-      publishedUsec: String((Number.isFinite(publishedMs) ? publishedMs : Date.now()) * 1000),
-      crawlTimeMsec: String(Date.now()),
-      feedTitle: sub.title,
-      feedUrl: sub.url,
-      feedHtmlUrl: sub.htmlUrl,
-      bodyKey: '',
-    });
-    const bodyKey = `items/${sub.feedId}/${item.itemId}.json`;
-    await putBody(bodyKey, {
-      summaryHtml: parsedItem.description || parsedItem.content || '',
-      contentHtml: parsedItem.content || parsedItem.description || '',
-      rawTitle: parsedItem.title || '',
-      rawDescription: parsedItem.description || '',
-      rawContent: parsedItem.content || '',
-      url: parsedItem.link || '',
-      fetchedAt: new Date().toISOString(),
-    });
-    await upsertItem(sub.feedId, { ...item, bodyKey });
-    count += 1;
+    const result = await refreshItem(sub, parsedItem);
+    if (result === 'written') count += 1;
+    else if (result === 'skipped') skipped += 1;
   }
-  return { feedId: sub.feedId, ok: true, count };
+
+  await updateFetchState(sub.feedId, {
+    etag: res.headers.get('etag') || sub.etag || '',
+    lastModified: res.headers.get('last-modified') || sub.lastModified || '',
+    lastFetchAt: now,
+    lastSuccessAt: Date.now(),
+    lastStatus: 200,
+    lastError: '',
+  });
+  return { feedId: sub.feedId, ok: true, count, skipped };
+}
+
+async function refreshItem(sub, parsedItem) {
+  const guid = parsedItem.guid || parsedItem.link || parsedItem.title;
+  if (!guid) return 'ignored';
+
+  const itemId = storage.itemIdFor(sub.feedId, guid);
+  const old = storage.getItem ? await storage.getItem(itemId) : (await storage.getItems([itemId]))[0] || null;
+  const publishedMs = parsedItem.pubDate ? Date.parse(parsedItem.pubDate) : NaN;
+  const stableBody = bodyFor(parsedItem);
+  const body = { ...stableBody, fetchedAt: new Date().toISOString() };
+  const bodyHash = hashJson(stableBody);
+  const bodyKey = `items/${sub.feedId}/${itemId}.json`;
+  const next = {
+    itemId,
+    guid,
+    url: parsedItem.link || '',
+    title: parsedItem.title || '',
+    author: parsedItem.author || '',
+    publishedUsec: String((Number.isFinite(publishedMs) ? publishedMs : old?.publishedUsec ? Math.floor(Number(old.publishedUsec) / 1000) : Date.now()) * 1000),
+    crawlTimeMsec: old?.crawlTimeMsec || String(Date.now()),
+    feedTitle: sub.title,
+    feedUrl: sub.url,
+    feedHtmlUrl: sub.htmlUrl,
+    bodyKey,
+    bodyHash,
+  };
+
+  if (old && unchanged(old, next)) return 'skipped';
+  if (!old || old.bodyHash !== bodyHash || old.bodyKey !== bodyKey) await putBody(bodyKey, body);
+  await storage.upsertItem(sub.feedId, next);
+  return 'written';
+}
+
+function bodyFor(parsedItem) {
+  return {
+    summaryHtml: parsedItem.description || parsedItem.content || '',
+    contentHtml: parsedItem.content || parsedItem.description || '',
+    rawTitle: parsedItem.title || '',
+    rawDescription: parsedItem.description || '',
+    rawContent: parsedItem.content || '',
+    url: parsedItem.link || '',
+  };
+}
+
+function unchanged(old, next) {
+  for (const key of ['guid', 'url', 'title', 'author', 'publishedUsec', 'feedTitle', 'feedUrl', 'feedHtmlUrl', 'bodyKey', 'bodyHash']) {
+    if (String(old[key] || '') !== String(next[key] || '')) return false;
+  }
+  return true;
+}
+
+function hashJson(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+async function updateFetchState(feedId, patch) {
+  if (storage.updateSubscriptionFetchState) await storage.updateSubscriptionFetchState(feedId, patch);
 }
 
 function parseFeed(xml) {

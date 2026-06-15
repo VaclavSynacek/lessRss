@@ -71,6 +71,14 @@ async function unsubscribe(streamId) {
   await putEntity('USER', 'SUB#' + feedId, 'subscription', { ...old, active: false, updatedAt: Date.now() });
 }
 
+async function updateSubscriptionFetchState(feedId, patch) {
+  const old = await getAnySubscription(feedId);
+  if (!old) return null;
+  const next = { ...old, ...patch, updatedAt: Date.now() };
+  await putEntity('USER', 'SUB#' + feedId, 'subscription', next);
+  return next;
+}
+
 async function getAnySubscription(feedId) {
   const res = await ddb.send(new GetCommand({ TableName, Key: { PK: 'USER', SK: 'SUB#' + feedId } }));
   return res.Item ? stripKeys(res.Item) : null;
@@ -99,12 +107,16 @@ async function listStreamItems(streamId, opts = {}) {
   return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
 }
 
+async function getItem(id) {
+  const res = await ddb.send(new GetCommand({ TableName, Key: { PK: 'ITEM#' + normalizeItemId(id), SK: 'META' } }));
+  return res.Item ? stripKeys(res.Item) : null;
+}
+
 async function getItems(ids) {
-  const normalized = ids.map(normalizeItemId);
   const out = [];
-  for (const id of normalized) {
-    const res = await ddb.send(new GetCommand({ TableName, Key: { PK: 'ITEM#' + id, SK: 'META' } }));
-    if (res.Item) out.push(stripKeys(res.Item));
+  for (const id of ids) {
+    const item = await getItem(id);
+    if (item) out.push(item);
   }
   return out;
 }
@@ -140,11 +152,20 @@ async function upsertItem(feedId, fields) {
 }
 
 async function putItemWithIndexes(oldItem, item) {
-  for (const key of indexKeys(oldItem || {})) await deleteKey(key.PK, key.SK);
+  const oldKeys = indexKeys(oldItem || {});
+  const newKeys = indexKeys(item);
+  const oldSet = new Set(oldKeys.map(keyString));
+  const newSet = new Set(newKeys.map(keyString));
+  for (const key of oldKeys) if (!newSet.has(keyString(key))) await deleteKey(key.PK, key.SK);
   await putEntity('ITEM#' + item.itemId, 'META', 'item', item);
-  for (const key of indexKeys(item)) {
+  for (const key of newKeys) {
+    if (oldSet.has(keyString(key))) continue;
     await ddb.send(new PutCommand({ TableName, Item: { ...key, entity: 'streamItem', itemId: String(item.itemId), feedId: item.feedId } }));
   }
+}
+
+function keyString(key) {
+  return key.PK + '\n' + key.SK;
 }
 
 async function putEntity(PK, SK, entity, value) {
@@ -226,9 +247,11 @@ module.exports = {
   unsubscribe,
   listItems,
   listStreamItems,
+  getItem,
   getItems,
   updateItems,
   upsertItem,
+  updateSubscriptionFetchState,
   normalizeItemId,
   feedIdFor,
   itemIdFor,

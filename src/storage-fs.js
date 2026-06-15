@@ -92,6 +92,17 @@ async function unsubscribe(streamId) {
   });
 }
 
+async function updateSubscriptionFetchState(feedId, patch) {
+  return withWriteLock(async () => {
+    const state = await loadState();
+    const old = state.subscriptions[String(feedId)];
+    if (!old) return null;
+    state.subscriptions[String(feedId)] = { ...old, ...patch, updatedAt: Date.now() };
+    await saveState(state);
+    return state.subscriptions[String(feedId)];
+  });
+}
+
 async function listItems() {
   const state = await loadState();
   return Object.values(state.items);
@@ -103,6 +114,11 @@ async function listStreamItems(streamId, opts = {}) {
   items = sortStreamItems(items, opts.order);
   const limit = Number(opts.limit || 20);
   return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
+}
+
+async function getItem(id) {
+  const state = await loadState();
+  return state.items[normalizeItemId(id)] || null;
 }
 
 async function getItems(ids) {
@@ -185,9 +201,11 @@ module.exports = {
   unsubscribe,
   listItems,
   listStreamItems,
+  getItem,
   getItems,
   updateItems,
   upsertItem,
+  updateSubscriptionFetchState,
   normalizeItemId,
   feedIdFor,
   itemIdFor,

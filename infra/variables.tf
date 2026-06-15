@@ -25,7 +25,7 @@ variable "auth_secret" {
 variable "crawler_schedule_expression" {
   type        = string
   description = "EventBridge schedule for feed refresh."
-  default     = "rate(15 minutes)"
+  default     = "rate(2 hours)"
 }
 
 variable "lambda_timeout_seconds" {
