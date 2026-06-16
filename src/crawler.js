@@ -56,7 +56,7 @@ async function refreshSubscription(sub) {
   const parsed = await parseFeed(xml);
   let count = 0;
   let skipped = 0;
-  for (const parsedItem of parsed.items) {
+  for (const parsedItem of latestItems(parsed.items, maxItemsPerFeed())) {
     const result = await refreshItem(sub, parsedItem, parsed.link);
     if (result === 'written') count += 1;
     else if (result === 'skipped') skipped += 1;
@@ -154,6 +154,26 @@ function crawlerConcurrency() {
 function feedTimeoutMs() {
   const n = Number(process.env.LESSRSS_FEED_TIMEOUT_MS || 30000);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000;
+}
+
+function maxItemsPerFeed() {
+  const n = Number(process.env.LESSRSS_MAX_ITEMS_PER_FEED || 10);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 10;
+}
+
+function latestItems(items, limit) {
+  if (!Array.isArray(items) || items.length <= limit) return items || [];
+  return items
+    .map((item, index) => ({ item, index, time: item.pubDate ? Date.parse(item.pubDate) : NaN }))
+    .sort((a, b) => {
+      const at = Number.isFinite(a.time);
+      const bt = Number.isFinite(b.time);
+      if (at && bt && a.time !== b.time) return b.time - a.time;
+      if (at !== bt) return at ? -1 : 1;
+      return a.index - b.index;
+    })
+    .slice(0, limit)
+    .map((x) => x.item);
 }
 
 async function parseFeed(xml) {
