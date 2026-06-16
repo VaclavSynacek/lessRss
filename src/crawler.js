@@ -1,8 +1,18 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const Parser = require('rss-parser');
 const storage = require('./storage');
 const { putBody } = require('./body-store');
+
+const feedParser = new Parser({
+  customFields: {
+    item: [
+      ['content:encoded', 'contentEncoded'],
+      ['dc:creator', 'dcCreator'],
+    ],
+  },
+});
 
 async function refreshAll() {
   const subs = await storage.listSubscriptions();
@@ -42,7 +52,7 @@ async function refreshSubscription(sub) {
   }
 
   const xml = await res.text();
-  const parsed = parseFeed(xml);
+  const parsed = await parseFeed(xml);
   let count = 0;
   let skipped = 0;
   for (const parsedItem of parsed.items) {
@@ -144,81 +154,26 @@ function feedTimeoutMs() {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000;
 }
 
-function parseFeed(xml) {
-  if (/<feed[\s>]/i.test(xml)) return parseAtom(xml);
-  return parseRss(xml);
+async function parseFeed(xml) {
+  const parsed = await feedParser.parseString(xml);
+  const isAtom = /<feed[\s>]/i.test(xml);
+  return {
+    title: parsed.title || '',
+    link: parsed.link || parsed.feedUrl || '',
+    items: (parsed.items || []).map((item) => normalizeParsedItem(item, isAtom)),
+  };
 }
 
-function parseRss(xml) {
-  const items = [];
-  for (const block of matchBlocks(xml, 'item')) {
-    items.push({
-      title: textTag(block, 'title'),
-      description: textTag(block, 'description'),
-      content: textTag(block, 'content:encoded') || textTag(block, 'encoded'),
-      link: textTag(block, 'link'),
-      guid: textTag(block, 'guid'),
-      pubDate: textTag(block, 'pubDate') || textTag(block, 'dc:date'),
-      author: textTag(block, 'author') || textTag(block, 'dc:creator'),
-    });
-  }
-  return { items };
-}
-
-function parseAtom(xml) {
-  const items = [];
-  for (const block of matchBlocks(xml, 'entry')) {
-    items.push({
-      title: textTag(block, 'title'),
-      description: textTag(block, 'summary'),
-      content: textTag(block, 'content'),
-      link: attrTag(block, 'link', 'href') || textTag(block, 'link'),
-      guid: textTag(block, 'id'),
-      pubDate: textTag(block, 'published') || textTag(block, 'updated'),
-      author: textTag(matchBlocks(block, 'author')[0] || '', 'name'),
-    });
-  }
-  return { items };
-}
-
-function matchBlocks(xml, tag) {
-  const re = new RegExp(`<${escapeRe(tag)}\\b[^>]*>([\\s\\S]*?)<\\/${escapeRe(tag)}>`, 'gi');
-  const out = [];
-  let m;
-  while ((m = re.exec(xml))) out.push(m[1]);
-  return out;
-}
-
-function textTag(xml, tag) {
-  const re = new RegExp(`<${escapeRe(tag)}\\b[^>]*>([\\s\\S]*?)<\\/${escapeRe(tag)}>`, 'i');
-  const m = re.exec(xml || '');
-  return m ? decodeXml(stripCdata(m[1]).trim()) : '';
-}
-
-function attrTag(xml, tag, attr) {
-  const re = new RegExp(`<${escapeRe(tag)}\\b([^>]*)>`, 'i');
-  const m = re.exec(xml || '');
-  if (!m) return '';
-  const are = new RegExp(`${escapeRe(attr)}=["']([^"']+)["']`, 'i');
-  const am = are.exec(m[1]);
-  return am ? decodeXml(am[1]) : '';
-}
-
-function stripCdata(s) {
-  return String(s).replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
-}
-
-function decodeXml(s) {
-  return String(s)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
-function escapeRe(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function normalizeParsedItem(item, isAtom) {
+  return {
+    title: item.title || '',
+    description: isAtom ? (item.summary || '') : (item.content || ''),
+    content: isAtom ? (item.content || '') : (item.contentEncoded || ''),
+    link: item.link || '',
+    guid: item.guid || item.id || '',
+    pubDate: item.isoDate || item.pubDate || '',
+    author: item.creator || item.dcCreator || item.author || '',
+  };
 }
 
 module.exports = { refreshAll, refreshSubscription, parseFeed };

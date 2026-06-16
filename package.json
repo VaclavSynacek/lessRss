@@ -17,6 +17,7 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1068.0",
     "@aws-sdk/client-s3": "^3.1068.0",
-    "@aws-sdk/lib-dynamodb": "^3.1068.0"
+    "@aws-sdk/lib-dynamodb": "^3.1068.0",
+    "rss-parser": "^3.13.0"
   }
 }
