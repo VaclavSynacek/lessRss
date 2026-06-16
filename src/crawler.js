@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const Parser = require('rss-parser');
 const storage = require('./storage');
 const { putBody } = require('./body-store');
+const { absoluteUrl, sanitizeArticleHtml } = require('./html-sanitize');
 
 const feedParser = new Parser({
   customFields: {
@@ -56,7 +57,7 @@ async function refreshSubscription(sub) {
   let count = 0;
   let skipped = 0;
   for (const parsedItem of parsed.items) {
-    const result = await refreshItem(sub, parsedItem);
+    const result = await refreshItem(sub, parsedItem, parsed.link);
     if (result === 'written') count += 1;
     else if (result === 'skipped') skipped += 1;
   }
@@ -72,21 +73,22 @@ async function refreshSubscription(sub) {
   return { feedId: sub.feedId, ok: true, count, skipped };
 }
 
-async function refreshItem(sub, parsedItem) {
-  const guid = parsedItem.guid || parsedItem.link || parsedItem.title;
+async function refreshItem(sub, parsedItem, feedHtmlUrl = '') {
+  const itemUrl = absoluteUrl(parsedItem.link, feedHtmlUrl || sub.htmlUrl || sub.url);
+  const guid = parsedItem.guid || itemUrl || parsedItem.title;
   if (!guid) return 'ignored';
 
   const itemId = storage.itemIdFor(sub.feedId, guid);
   const old = storage.getItem ? await storage.getItem(itemId) : (await storage.getItems([itemId]))[0] || null;
   const publishedMs = parsedItem.pubDate ? Date.parse(parsedItem.pubDate) : NaN;
-  const stableBody = bodyFor(parsedItem);
+  const stableBody = bodyFor(parsedItem, itemUrl, feedHtmlUrl || sub.htmlUrl || sub.url);
   const body = { ...stableBody, fetchedAt: new Date().toISOString() };
   const bodyHash = hashJson(stableBody);
   const bodyKey = `items/${sub.feedId}/${itemId}.json`;
   const next = {
     itemId,
     guid,
-    url: parsedItem.link || '',
+    url: itemUrl,
     title: parsedItem.title || '',
     author: parsedItem.author || '',
     publishedUsec: String((Number.isFinite(publishedMs) ? publishedMs : old?.publishedUsec ? Math.floor(Number(old.publishedUsec) / 1000) : Date.now()) * 1000),
@@ -104,14 +106,14 @@ async function refreshItem(sub, parsedItem) {
   return 'written';
 }
 
-function bodyFor(parsedItem) {
+function bodyFor(parsedItem, itemUrl, feedHtmlUrl) {
+  const baseUrl = itemUrl || feedHtmlUrl;
+  const summaryHtml = parsedItem.description || parsedItem.content || '';
+  const contentHtml = parsedItem.content || parsedItem.description || '';
   return {
-    summaryHtml: parsedItem.description || parsedItem.content || '',
-    contentHtml: parsedItem.content || parsedItem.description || '',
-    rawTitle: parsedItem.title || '',
-    rawDescription: parsedItem.description || '',
-    rawContent: parsedItem.content || '',
-    url: parsedItem.link || '',
+    summaryHtml: sanitizeArticleHtml(summaryHtml, baseUrl),
+    contentHtml: sanitizeArticleHtml(contentHtml, baseUrl),
+    url: itemUrl || '',
   };
 }
 
