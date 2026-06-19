@@ -208,3 +208,39 @@ GREADER_SKIP_INGESTION=1 npm --prefix ../google-reader-api-tests test
 - 2026-06-13: AWS contract suite passed with ingestion skipped: 24 pass, 0 fail, 7 skipped. Skips are expected because AWS Lambda cannot reach the local contract feed server and the remote state had no persistent feed items after cleanup.
 - 2026-06-13: Destroyed the temporary AWS test stack after explicit request. Future AWS ingestion testing should be done from an EC2-hosted test runner or another environment where the feed fixture is reachable by Lambda.
 - Next: in a future AWS session, deploy again and run ingestion tests from EC2 or with a public/tunneled feed fixture.
+
+## AWS cost and latency review (2026-06-19)
+
+Reviewed real CloudWatch metrics against the live personal deployment (`lessrss-ac893178` in `eu-central-1`). The AWS account predates the 12-month Free Tier, so only Always-Free limits apply.
+
+### Steady-state cost (24h measurement, annualized)
+
+- Lambda: ~5,260 req/month, ~11,200 GB-s/month. Comfortably inside the Always-Free 1M req + 400k GB-s tier. Cost: $0.
+- DynamoDB (on-demand): ~545k RCU + ~219k WCU/month, 0.85 MB storage. Throughput is never free on on-demand; this is the only meaningful line item at ~$0.40/month.
+- S3 / CloudWatch Logs / EventBridge: negligible.
+- **Realistic monthly bill at current usage: ~$0.40/month, almost entirely DynamoDB on-demand.**
+
+### Lessons learned / changes shipped
+
+1. **Initial-crawl bias matters when measuring.** The first 7-day window was dominated by the one-time full crawl (S3 peaked at 45 MB / 2,464 objects before settling to 12 MB / 898). Steady-state measurement over the last 24h gave a much lower and more representative picture.
+2. **`lastFetchAt` / `lastSuccessAt` / `lastStatus` / `lastError` on subscription rows were dead code** — written every refresh, never read anywhere. Dropped them; the crawler now writes a subscription row only when `etag` or `lastModified` actually changed (304s and 200-with-same-headers write nothing). This extends the existing no-write-on-no-change rule from items to subscriptions. Commit `af5a887`.
+3. **Concurrency is not a Lambda cost lever; RAM is.** Lambda bills GB-s = memory × duration summed over all concurrent invocations, so parallelizing work changes wall-clock but not bill. Raising concurrency only helps if there is a wall-clock problem (timeouts, freshness). Verified via CloudWatch: crawler max concurrent executions = 1, no throttles, no wall-clock problem.
+4. **Crawler Lambda memory is overprovisioned.** `@maxMemoryUsed` peaked at 182 MB of the configured 512 MB over 7 days. Lowered crawler to 256 MB. Split the shared `lambda_memory_mb` variable into `api_memory_mb` (512, unchanged) and `crawler_memory_mb` (256). Commit `732be27`.
+5. **API read path had two independent serial-await bottlenecks**, both of which made latency scale with item count:
+   - `router.streamContents` / `streamItemsContents` hydrated S3 bodies in a serial `for await`; default `n=20` meant up to 20 sequential S3 GetObjects. Parallelized via shared `mapLimit` (cap 20, env `LESSRSS_BODY_FETCH_CONCURRENCY`). Commit `58bc14c`.
+   - `storage-dynamodb.listStreamItems` -> `getItems` did serial DynamoDB GetItems per row, and `queryAll` paginated the entire stream before slicing to `n`. Parallelized `getItems` (cap 20, env `LESSRSS_DDB_GET_CONCURRENCY`) and pushed a `Limit` of `max(n, n*5)` (capped 1000) into the Query with oversample headroom for `filterPostQuery`. Commit `1a51d97`.
+6. **`mapLimit` extracted to `src/async-util.js`** and reused by crawler and storage-dynamodb.
+
+### Measured latency impact (live, end-to-end including network)
+
+- `stream/contents` n=20 (default reading-list): ~8s -> ~1.5s (about 5x faster).
+- n=5: ~8s -> ~0.4s.
+- n=50: ~20s+ -> ~3.4s.
+- API-side p50 dropped from bimodal (15ms fast / 8-24s slow hydration) to consistently fast; exact post-fix distribution TBD after a day or two of real Android-client traffic.
+
+### Open follow-ups
+
+- Re-measure API duration distribution after 1-2 days of real client traffic to confirm the latency fix and re-check cost.
+- If n=20 list views are still perceived as slow, the next lever is a schema change: store a short `summarySnippet` in the DynamoDB item row so list views can skip S3 entirely and fall back to S3 only for full-body fetch. This needs confirming whether the (unchangeable) Android client tolerates a truncated `summary` in `stream/contents` versus requiring the full body inline.
+- Streaming the response (Lambda Function URL `ResponseStream`) was evaluated and rejected: GReader JSON is a single parseable object so incremental rendering is not possible, and the bottleneck was server-side serial I/O, not transfer.
+- Raising API Lambda memory (512 -> 1024) is the inverse of the crawler change and may help if JSON serialization or sanitize-html becomes a hot path after the I/O fixes; measure first.
