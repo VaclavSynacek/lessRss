@@ -50,7 +50,14 @@ variable "crawler_concurrency" {
   default     = 5
 }
 
-variable "lambda_memory_mb" {
-  type    = number
-  default = 512
+variable "api_memory_mb" {
+  type        = number
+  description = "Memory (MB) for the API Lambda function."
+  default     = 512
+}
+
+variable "crawler_memory_mb" {
+  type        = number
+  description = "Memory (MB) for the crawler Lambda function. I/O-bound; peaks well below 256MB."
+  default     = 256
 }

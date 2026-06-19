@@ -143,7 +143,7 @@ resource "aws_lambda_function" "api" {
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
   timeout          = var.lambda_timeout_seconds
-  memory_size      = var.lambda_memory_mb
+  memory_size      = var.api_memory_mb
 
   environment {
     variables = local.lambda_env
@@ -160,7 +160,7 @@ resource "aws_lambda_function" "crawler" {
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
   timeout          = var.crawler_timeout_seconds
-  memory_size      = var.lambda_memory_mb
+  memory_size      = var.crawler_memory_mb
 
   environment {
     variables = local.lambda_env
