@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { documentClient, tableName } = require('./dynamodb-client');
+const { mapLimit } = require('./async-util');
 
 const ddb = documentClient();
 const TableName = tableName();
@@ -95,16 +96,23 @@ async function listItems() {
 
 async function listStreamItems(streamId, opts = {}) {
   const pk = streamPk(streamId, opts);
+  // Pull enough stream-index rows to satisfy the requested limit plus headroom
+  // for client-side filtering (filterPostQuery may drop rows for label/starred/
+  // time-range views). Avoids fetching and hydrating the entire stream when the
+  // caller only wants the first page.
+  const limit = Number(opts.limit || 20);
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
+  const oversample = Math.min(1000, Math.max(safeLimit, safeLimit * 5));
   let rows = await queryAll({
     TableName,
     KeyConditionExpression: 'PK = :pk',
     ExpressionAttributeValues: { ':pk': pk },
     ScanIndexForward: opts.order === 'o' ? false : true,
+    Limit: oversample,
   });
   let items = await getItems(rows.map((row) => row.itemId));
   items = filterPostQuery(items, streamId, opts);
-  const limit = Number(opts.limit || 20);
-  return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
+  return items.slice(0, safeLimit);
 }
 
 async function getItem(id) {
@@ -113,12 +121,9 @@ async function getItem(id) {
 }
 
 async function getItems(ids) {
-  const out = [];
-  for (const id of ids) {
-    const item = await getItem(id);
-    if (item) out.push(item);
-  }
-  return out;
+  const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
+  const items = await mapLimit(ids, cap, async (id) => getItem(id));
+  return items.filter((x) => x);
 }
 
 async function updateItems(mutator) {
@@ -230,10 +235,12 @@ function stripKeys(row) {
 async function queryAll(input) {
   const out = [];
   let ExclusiveStartKey;
+  const hardCap = Number(input.Limit) || Infinity;
   do {
     const res = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
     out.push(...(res.Items || []));
     ExclusiveStartKey = res.LastEvaluatedKey;
+    if (out.length >= hardCap) break;
   } while (ExclusiveStartKey);
   return out;
 }
