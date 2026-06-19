@@ -23,7 +23,6 @@ async function refreshAll() {
 }
 
 async function refreshSubscription(sub) {
-  const now = Date.now();
   const headers = { 'User-Agent': 'lessRss/0.1' };
   if (sub.etag) headers['If-None-Match'] = sub.etag;
   if (sub.lastModified) headers['If-Modified-Since'] = sub.lastModified;
@@ -35,21 +34,19 @@ async function refreshSubscription(sub) {
     res = await fetch(sub.url, { headers, signal: ctrl.signal });
   } catch (e) {
     const message = e.name === 'AbortError' ? `fetch timeout after ${feedTimeoutMs()}ms` : e.message;
-    await updateFetchState(sub.feedId, { lastFetchAt: now, lastError: message });
     throw new Error(message);
   } finally {
     clearTimeout(timer);
   }
 
+  // 304: server confirmed nothing changed, so etag/lastModified are unchanged.
+  // Nothing to persist.
   if (res.status === 304) {
-    await updateFetchState(sub.feedId, { lastFetchAt: now, lastStatus: 304, lastError: '' });
     return { feedId: sub.feedId, ok: true, count: 0, skipped: 0, notModified: true };
   }
 
   if (!res.ok) {
-    const message = `fetch ${sub.url} HTTP ${res.status}`;
-    await updateFetchState(sub.feedId, { lastFetchAt: now, lastStatus: res.status, lastError: message });
-    throw new Error(message);
+    throw new Error(`fetch ${sub.url} HTTP ${res.status}`);
   }
 
   const xml = await res.text();
@@ -62,14 +59,14 @@ async function refreshSubscription(sub) {
     else if (result === 'skipped') skipped += 1;
   }
 
-  await updateFetchState(sub.feedId, {
-    etag: res.headers.get('etag') || sub.etag || '',
-    lastModified: res.headers.get('last-modified') || sub.lastModified || '',
-    lastFetchAt: now,
-    lastSuccessAt: Date.now(),
-    lastStatus: 200,
-    lastError: '',
-  });
+  // Only persist fetch state when the caching headers actually changed.
+  // This keeps steady-state refreshes (200 with same etag/last-modified) free
+  // of subscription-row writes, matching the no-write-on-no-change rule.
+  const nextEtag = res.headers.get('etag') || sub.etag || '';
+  const nextLastModified = res.headers.get('last-modified') || sub.lastModified || '';
+  if (nextEtag !== (sub.etag || '') || nextLastModified !== (sub.lastModified || '')) {
+    await updateFetchState(sub.feedId, { etag: nextEtag, lastModified: nextLastModified });
+  }
   return { feedId: sub.feedId, ok: true, count, skipped };
 }
 
