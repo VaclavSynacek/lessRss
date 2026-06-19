@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const Parser = require('rss-parser');
+const { mapLimit } = require('./async-util');
 const storage = require('./storage');
 const { putBody } = require('./body-store');
 const { absoluteUrl, sanitizeArticleHtml } = require('./html-sanitize');
@@ -127,20 +128,6 @@ function hashJson(value) {
 
 async function updateFetchState(feedId, patch) {
   if (storage.updateSubscriptionFetchState) await storage.updateSubscriptionFetchState(feedId, patch);
-}
-
-async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      out[index] = await fn(items[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return out;
 }
 
 function crawlerConcurrency() {

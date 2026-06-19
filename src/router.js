@@ -4,8 +4,14 @@ const { configuredUser, validateLogin, loginResponse, validateAuthHeader, postTo
 const { STATE } = require('./constants');
 const { json, text, xml, unauthorized, notFound, badRequest, formParams, arrayParam } = require('./http');
 const storage = require('./storage');
+const { mapLimit } = require('./async-util');
 const { subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
 const { refreshAll } = require('./crawler');
+
+// Cap on simultaneous S3 body fetches per stream read. Bounded to avoid
+// fanning out hundreds of connections for large n= requests while still
+// removing the previous serial-await bottleneck.
+const BODY_FETCH_CONCURRENCY = Math.max(1, Number(process.env.LESSRSS_BODY_FETCH_CONCURRENCY) || 20);
 
 async function route(req) {
   const url = new URL(req.rawPath + (req.rawQueryString ? '?' + req.rawQueryString : ''), 'http://local');
@@ -146,8 +152,9 @@ async function streamContents(streamId, params) {
   const items = await selectItems(streamId, params);
   const subs = await storage.listSubscriptions();
   const subMap = new Map(subs.map((s) => [s.feedId, s]));
-  const out = [];
-  for (const item of items) out.push(await itemToGreader(item, subMap.get(item.feedId)));
+  // Fan out S3 body fetches in parallel; each itemToGreader awaits getBody(),
+  // so serial iteration made latency scale with item count (n defaults to 20).
+  const out = await mapLimit(items, BODY_FETCH_CONCURRENCY, (item) => itemToGreader(item, subMap.get(item.feedId)));
   return json(200, {
     id: streamId,
     title: streamTitle(streamId),
@@ -169,8 +176,7 @@ async function streamItemsContents(req) {
   const items = sortItems(await storage.getItems(ids), form.r);
   const subs = await storage.listSubscriptions();
   const subMap = new Map(subs.map((s) => [s.feedId, s]));
-  const out = [];
-  for (const item of items) out.push(await itemToGreader(item, subMap.get(item.feedId)));
+  const out = await mapLimit(items, BODY_FETCH_CONCURRENCY, (item) => itemToGreader(item, subMap.get(item.feedId)));
   return json(200, { items: out });
 }
 
