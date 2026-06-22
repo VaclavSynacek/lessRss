@@ -84,11 +84,17 @@ async function unsubscribe(streamId) {
   return withWriteLock(async () => {
     const feedId = String(streamId || '').replace(/^feed\//, '');
     const state = await loadState();
-    if (state.subscriptions[feedId]) {
-      state.subscriptions[feedId].active = false;
-      state.subscriptions[feedId].updatedAt = Date.now();
-      await saveState(state);
+    if (!state.subscriptions[feedId]) return;
+    // Hard delete: drop every item belonging to this feed and its body, then
+    // remove the subscription row. Mirrors storage-dynamodb.unsubscribe.
+    const { deleteBody } = require('./body-store');
+    for (const item of Object.values(state.items)) {
+      if (String(item.feedId) !== String(feedId)) continue;
+      if (item.bodyKey) await deleteBody(item.bodyKey).catch(() => {});
+      delete state.items[String(item.itemId)];
     }
+    delete state.subscriptions[feedId];
+    await saveState(state);
   });
 }
 

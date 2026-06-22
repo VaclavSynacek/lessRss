@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { documentClient, tableName } = require('./dynamodb-client');
 const { mapLimit } = require('./async-util');
+const { deleteBody } = require('./body-store');
 
 const ddb = documentClient();
 const TableName = tableName();
@@ -67,9 +68,41 @@ async function subscribe(url, title) {
 
 async function unsubscribe(streamId) {
   const feedId = String(streamId || '').replace(/^feed\//, '');
-  const old = await getAnySubscription(feedId);
-  if (!old) return;
-  await putEntity('USER', 'SUB#' + feedId, 'subscription', { ...old, active: false, updatedAt: Date.now() });
+  const sub = await getAnySubscription(feedId);
+  if (!sub) return;
+
+  // Hard delete: remove every item belonging to this feed from DynamoDB
+  // (META row + all stream-index rows: ALL, FEED, UNREAD, FEED#UNREAD,
+  // STARRED, LABEL#...) and its S3 body object, then drop the subscription
+  // row itself. Soft-deleting (active=false) would leave orphaned items
+  // polluting STREAM#ALL, unread-count, starred and label views forever.
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': 'STREAM#FEED#' + feedId },
+    ProjectionExpression: 'itemId',
+  });
+  const itemIds = rows.map((r) => r.itemId).filter(Boolean);
+  const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
+  await mapLimit(itemIds, cap, deleteItemFully);
+  await deleteKey('USER', 'SUB#' + feedId);
+}
+
+/**
+ * Delete a single item's META row, every stream-index row it currently
+ * occupies, and its S3 body object. Idempotent: missing rows/objects are
+ * treated as already-deleted.
+ */
+async function deleteItemFully(itemId) {
+  const oldRes = await ddb.send(new GetCommand({ TableName, Key: { PK: 'ITEM#' + itemId, SK: 'META' } }));
+  const old = oldRes.Item ? stripKeys(oldRes.Item) : null;
+  // Compute index keys from the stored state so STARRED / LABEL rows that
+  // were added via edit-tag are also removed.
+  for (const key of indexKeys(old || { itemId })) {
+    await deleteKey(key.PK, key.SK);
+  }
+  await deleteKey('ITEM#' + itemId, 'META');
+  if (old?.bodyKey) await deleteBody(old.bodyKey).catch(() => { /* best effort */ });
 }
 
 async function updateSubscriptionFetchState(feedId, patch) {

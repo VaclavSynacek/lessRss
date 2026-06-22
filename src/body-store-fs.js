@@ -22,4 +22,14 @@ async function getBody(key) {
   }
 }
 
-module.exports = { putBody, getBody };
+async function deleteBody(key) {
+  if (!key) return;
+  try {
+    await fs.unlink(path.join(BODY_ROOT, key));
+  } catch (e) {
+    if (e.code === 'ENOENT') return;
+    throw e;
+  }
+}
+
+module.exports = { putBody, getBody, deleteBody };

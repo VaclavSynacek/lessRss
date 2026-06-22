@@ -1,6 +1,6 @@
 'use strict';
 
-const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 
 const bucket = process.env.LESSRSS_BODY_BUCKET || process.env.LESSRSS_S3_BUCKET;
 if (!bucket) throw new Error('LESSRSS_BODY_BUCKET or LESSRSS_S3_BUCKET is required for LESSRSS_BODY_STORE=s3');
@@ -37,4 +37,14 @@ async function getBody(key) {
   }
 }
 
-module.exports = { putBody, getBody };
+async function deleteBody(key) {
+  if (!key) return;
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  } catch (e) {
+    if (e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) return;
+    throw e;
+  }
+}
+
+module.exports = { putBody, getBody, deleteBody };
