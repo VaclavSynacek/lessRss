@@ -90,7 +90,10 @@ async function unsubscribe(streamId) {
     const { deleteBody } = require('./body-store');
     for (const item of Object.values(state.items)) {
       if (String(item.feedId) !== String(feedId)) continue;
-      if (item.bodyKey) await deleteBody(item.bodyKey).catch(() => {});
+      if (item.bodyKey) {
+        try { await deleteBody(item.bodyKey); }
+        catch (e) { console.error('unsubscribe: failed to delete body', item.bodyKey, e.message); }
+      }
       delete state.items[String(item.itemId)];
     }
     delete state.subscriptions[feedId];

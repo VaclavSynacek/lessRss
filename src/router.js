@@ -144,7 +144,7 @@ async function subscriptionImport(req) {
     const title = unesc(m[2] || m[3] || url);
     if (url) await storage.subscribe(url, title);
   }
-  await refreshAll().catch(() => {});
+  await refreshAll().catch((e) => console.error('subscription/import: background refresh failed', e.message));
   return text(200, 'OK');
 }
 
