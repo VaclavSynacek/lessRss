@@ -102,7 +102,12 @@ async function deleteItemFully(itemId) {
     await deleteKey(key.PK, key.SK);
   }
   await deleteKey('ITEM#' + itemId, 'META');
-  if (old?.bodyKey) await deleteBody(old.bodyKey).catch(() => { /* best effort */ });
+  if (old?.bodyKey) {
+    // Best-effort: a failed body delete must not fail the unsubscribe, but
+    // should be visible. Log to stderr (CloudWatch) and continue.
+    try { await deleteBody(old.bodyKey); }
+    catch (e) { console.error('unsubscribe: failed to delete body', old.bodyKey, e.message); }
+  }
 }
 
 async function updateSubscriptionFetchState(feedId, patch) {
