@@ -52,10 +52,12 @@ async function refreshSubscription(sub) {
 
   const xml = await res.text();
   const parsed = await parseFeed(xml);
+  const metadataPatch = subscriptionMetadataPatch(sub, parsed);
+  const effectiveSub = { ...sub, ...metadataPatch };
   let count = 0;
   let skipped = 0;
   for (const parsedItem of latestItems(parsed.items, maxItemsPerFeed())) {
-    const result = await refreshItem(sub, parsedItem, parsed.link);
+    const result = await refreshItem(effectiveSub, parsedItem, parsed.link);
     if (result === 'written') count += 1;
     else if (result === 'skipped') skipped += 1;
   }
@@ -65,10 +67,26 @@ async function refreshSubscription(sub) {
   // of subscription-row writes, matching the no-write-on-no-change rule.
   const nextEtag = res.headers.get('etag') || sub.etag || '';
   const nextLastModified = res.headers.get('last-modified') || sub.lastModified || '';
-  if (nextEtag !== (sub.etag || '') || nextLastModified !== (sub.lastModified || '')) {
-    await updateFetchState(sub.feedId, { etag: nextEtag, lastModified: nextLastModified });
+  const subscriptionPatch = { ...metadataPatch };
+  if (nextEtag !== (sub.etag || '')) subscriptionPatch.etag = nextEtag;
+  if (nextLastModified !== (sub.lastModified || '')) subscriptionPatch.lastModified = nextLastModified;
+  if (Object.keys(subscriptionPatch).length > 0) {
+    await updateFetchState(sub.feedId, subscriptionPatch);
   }
   return { feedId: sub.feedId, ok: true, count, skipped };
+}
+
+function subscriptionMetadataPatch(sub, parsed) {
+  const patch = {};
+  const titleIsUrl = /^https?:\/\//i.test(String(sub.title || '').trim());
+  if (parsed.title && (!sub.title || titleIsUrl)) patch.title = parsed.title;
+
+  // A newly-added subscription initially uses its feed URL for htmlUrl. Also
+  // handle a feed URL that was repaired in place, leaving the old URL in both
+  // title and htmlUrl until the next successful crawl.
+  const placeholderHtmlUrl = !sub.htmlUrl || sub.htmlUrl === sub.url || sub.htmlUrl === sub.title;
+  if (parsed.link && placeholderHtmlUrl) patch.htmlUrl = parsed.link;
+  return patch;
 }
 
 async function refreshItem(sub, parsedItem, feedHtmlUrl = '') {
