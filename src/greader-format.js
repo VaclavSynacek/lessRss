@@ -3,12 +3,20 @@
 const { STATE } = require('./constants');
 const { getBody } = require('./body-store');
 
+function subscriptionTitle(sub) {
+  return sub.customTitle || sub.feedTitle || sub.url;
+}
+
+function subscriptionHtmlUrl(sub) {
+  return sub.customHtmlUrl || sub.feedHtmlUrl || sub.url;
+}
+
 function subscriptionToGreader(sub) {
   return {
     id: sub.id || ('feed/' + sub.feedId),
-    title: sub.title || sub.url,
+    title: subscriptionTitle(sub),
     url: sub.url,
-    htmlUrl: sub.htmlUrl || sub.url,
+    htmlUrl: subscriptionHtmlUrl(sub),
     iconUrl: '',
     categories: sub.categories || [],
     firstitemmsec: '0',
@@ -37,8 +45,8 @@ async function itemToGreader(item, sub) {
     categories,
     origin: {
       streamId: 'feed/' + item.feedId,
-      title: sub?.title || item.feedTitle || '',
-      htmlUrl: sub?.htmlUrl || item.feedHtmlUrl || '',
+      title: sub ? subscriptionTitle(sub) : (item.feedTitle || ''),
+      htmlUrl: sub ? subscriptionHtmlUrl(sub) : (item.feedHtmlUrl || ''),
       feedUrl: sub?.url || item.feedUrl || '',
     },
     enclosure: [],
@@ -60,4 +68,4 @@ function streamTitle(streamId) {
   return streamId;
 }
 
-module.exports = { subscriptionToGreader, itemToGreader, sortItems, streamTitle };
+module.exports = { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle };

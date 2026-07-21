@@ -53,7 +53,12 @@ async function refreshSubscription(sub) {
   const xml = await res.text();
   const parsed = await parseFeed(xml);
   const metadataPatch = subscriptionMetadataPatch(sub, parsed);
-  const effectiveSub = { ...sub, ...metadataPatch };
+  const effectiveSub = {
+    ...sub,
+    ...metadataPatch,
+    title: sub.customTitle || metadataPatch.feedTitle || sub.feedTitle || sub.url,
+    htmlUrl: sub.customHtmlUrl || metadataPatch.feedHtmlUrl || sub.feedHtmlUrl || sub.url,
+  };
   let count = 0;
   let skipped = 0;
   for (const parsedItem of latestItems(parsed.items, maxItemsPerFeed())) {
@@ -78,14 +83,8 @@ async function refreshSubscription(sub) {
 
 function subscriptionMetadataPatch(sub, parsed) {
   const patch = {};
-  const titleIsUrl = /^https?:\/\//i.test(String(sub.title || '').trim());
-  if (parsed.title && (!sub.title || titleIsUrl)) patch.title = parsed.title;
-
-  // A newly-added subscription initially uses its feed URL for htmlUrl. Also
-  // handle a feed URL that was repaired in place, leaving the old URL in both
-  // title and htmlUrl until the next successful crawl.
-  const placeholderHtmlUrl = !sub.htmlUrl || sub.htmlUrl === sub.url || sub.htmlUrl === sub.title;
-  if (parsed.link && placeholderHtmlUrl) patch.htmlUrl = parsed.link;
+  if (parsed.title && parsed.title !== sub.feedTitle) patch.feedTitle = parsed.title;
+  if (parsed.link && parsed.link !== sub.feedHtmlUrl) patch.feedHtmlUrl = parsed.link;
   return patch;
 }
 

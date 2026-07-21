@@ -5,7 +5,7 @@ const { STATE } = require('./constants');
 const { json, text, xml, unauthorized, notFound, badRequest, formParams, arrayParam } = require('./http');
 const storage = require('./storage');
 const { mapLimit } = require('./async-util');
-const { subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
+const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
 const { refreshAll } = require('./crawler');
 
 // Cap on simultaneous S3 body fetches per stream read. Bounded to avoid
@@ -126,12 +126,12 @@ async function quickAdd(req) {
   const form = formParams(req.body || '');
   if (!form.quickadd) return badRequest('missing quickadd');
   const sub = await storage.subscribe(form.quickadd);
-  return json(200, { numResults: 1, query: form.quickadd, streamId: sub.id, streamName: sub.title });
+  return json(200, { numResults: 1, query: form.quickadd, streamId: sub.id, streamName: subscriptionTitle(sub) });
 }
 
 async function subscriptionExport() {
   const subs = await storage.listSubscriptions();
-  const outlines = subs.map((s) => `    <outline type="rss" text="${esc(s.title)}" title="${esc(s.title)}" xmlUrl="${esc(s.url)}" htmlUrl="${esc(s.htmlUrl || s.url)}"/>`).join('\n');
+  const outlines = subs.map((s) => `    <outline type="rss" text="${esc(subscriptionTitle(s))}" title="${esc(subscriptionTitle(s))}" xmlUrl="${esc(s.url)}" htmlUrl="${esc(subscriptionHtmlUrl(s))}"/>`).join('\n');
   return xml(200, `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head><title>lessRss</title></head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`);
 }
 
