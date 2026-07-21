@@ -118,7 +118,16 @@ async function subscriptionEdit(req) {
     for (const s of streams) await storage.unsubscribe(s);
     return text(200, 'OK');
   }
-  if (ac === 'edit') return text(200, 'OK');
+  if (ac === 'edit') {
+    const titles = arrayParam(form.t);
+    for (let i = 0; i < streams.length; i += 1) {
+      if (titles.length === 0) continue;
+      const title = titles[Math.min(i, titles.length - 1)];
+      const feedId = String(streams[i]).replace(/^feed\//, '');
+      await storage.setSubscriptionCustomTitle(feedId, title);
+    }
+    return text(200, 'OK');
+  }
   return badRequest('unknown action');
 }
 

@@ -103,6 +103,17 @@ async function unsubscribe(streamId) {
   });
 }
 
+async function setSubscriptionCustomTitle(feedId, customTitle) {
+  return withWriteLock(async () => {
+    const state = await loadState();
+    const old = state.subscriptions[String(feedId)];
+    if (!old) return null;
+    state.subscriptions[String(feedId)] = { ...old, customTitle: String(customTitle || ''), updatedAt: Date.now() };
+    await saveState(state);
+    return state.subscriptions[String(feedId)];
+  });
+}
+
 async function updateSubscriptionFetchState(feedId, patch) {
   return withWriteLock(async () => {
     const state = await loadState();
@@ -217,6 +228,7 @@ module.exports = {
   updateItems,
   upsertItem,
   updateSubscriptionFetchState,
+  setSubscriptionCustomTitle,
   normalizeItemId,
   feedIdFor,
   itemIdFor,

@@ -112,6 +112,14 @@ async function deleteItemFully(itemId) {
   }
 }
 
+async function setSubscriptionCustomTitle(feedId, customTitle) {
+  const old = await getAnySubscription(feedId);
+  if (!old) return null;
+  const next = { ...old, customTitle: String(customTitle || ''), updatedAt: Date.now() };
+  await putEntity('USER', 'SUB#' + feedId, 'subscription', next);
+  return next;
+}
+
 async function updateSubscriptionFetchState(feedId, patch) {
   const old = await getAnySubscription(feedId);
   if (!old) return null;
@@ -299,6 +307,7 @@ module.exports = {
   updateItems,
   upsertItem,
   updateSubscriptionFetchState,
+  setSubscriptionCustomTitle,
   normalizeItemId,
   feedIdFor,
   itemIdFor,
