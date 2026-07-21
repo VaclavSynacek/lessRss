@@ -25,14 +25,14 @@ module "lessrss" {
 
   greader_user     = "YOUR-USER-NAME"
   greader_password = "YOUR-PASSWORD"
-  auth_secret
-  = "optional-separate-long-random-secret-that-is-not-user-visible-anymore"
 }
 
 output "greader_base_url" {
   value = module.lessrss.greader_base_url
 }
 ```
+(there are more optional configuration variables, but username and password are
+the only mandatory ones to get started)
 
 With AWS credentials configured, initialize and apply this configuration using Terraform or OpenTofu. Use the resulting `greader_base_url`, username, and password when configuring a Google Reader-compatible client.
 
