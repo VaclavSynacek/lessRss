@@ -186,6 +186,28 @@ async function updateItems(mutator) {
   });
 }
 
+async function applyItemTags(ids, patch) {
+  const idSet = new Set(ids.map(normalizeItemId));
+  return updateItems((items) => {
+    for (const item of Object.values(items)) {
+      if (!idSet.has(String(item.itemId))) continue;
+      if (patch.read !== undefined) item.read = patch.read;
+      if (patch.starred !== undefined) item.starred = patch.starred;
+      item.labels = (item.labels || []).filter((label) => !(patch.removeLabels || []).includes(label));
+      for (const label of patch.addLabels || []) if (!item.labels.includes(label)) item.labels.push(label);
+    }
+  });
+}
+
+async function markStreamRead(streamId, cutoffUsec = Infinity) {
+  return updateItems((items) => {
+    const matching = filterStreamItems(Object.values(items), streamId);
+    for (const item of matching) {
+      if (!item.read && Number(item.publishedUsec || 0) <= Number(cutoffUsec)) item.read = true;
+    }
+  });
+}
+
 async function upsertItem(feedId, fields) {
   return withWriteLock(async () => {
     const state = await loadState();
@@ -225,7 +247,8 @@ module.exports = {
   listStreamItems,
   getItem,
   getItems,
-  updateItems,
+  applyItemTags,
+  markStreamRead,
   upsertItem,
   updateSubscriptionFetchState,
   setSubscriptionCustomTitle,

@@ -8,6 +8,7 @@ const { deleteBody } = require('./body-store');
 
 const ddb = documentClient();
 const TableName = tableName();
+const MAX_INDEX_TIMESTAMP = 9999999999999999n;
 
 function hashHex(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
@@ -181,15 +182,56 @@ async function getItems(ids) {
   return items.filter((x) => x);
 }
 
-async function updateItems(mutator) {
-  const current = await listItems();
-  const oldById = Object.fromEntries(current.map((it) => [String(it.itemId), structuredClone(it)]));
-  const items = Object.fromEntries(current.map((it) => [String(it.itemId), it]));
-  const result = await mutator(items, { items });
-  for (const it of Object.values(items)) {
-    await putItemWithIndexes(oldById[String(it.itemId)], it);
+async function applyItemTags(ids, patch) {
+  const uniqueIds = [...new Set(ids.map(normalizeItemId))];
+  const current = await getItems(uniqueIds);
+  const changes = [];
+  for (const old of current) {
+    const item = structuredClone(old);
+    let changed = false;
+    if (patch.read !== undefined && item.read !== patch.read) {
+      item.read = patch.read;
+      changed = true;
+    }
+    if (patch.starred !== undefined && item.starred !== patch.starred) {
+      item.starred = patch.starred;
+      changed = true;
+    }
+    const oldLabels = item.labels || [];
+    const labels = oldLabels.filter((label) => !(patch.removeLabels || []).includes(label));
+    for (const label of patch.addLabels || []) if (!labels.includes(label)) labels.push(label);
+    if (labels.length !== oldLabels.length || labels.some((label, i) => label !== oldLabels[i])) {
+      item.labels = labels;
+      changed = true;
+    }
+    if (changed) changes.push({ old, item });
   }
-  return result;
+  const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
+  await mapLimit(changes, cap, ({ old, item }) => putItemWithIndexes(old, item));
+}
+
+async function markStreamRead(streamId, cutoffUsec = Infinity) {
+  if (Number.isNaN(Number(cutoffUsec))) return;
+  const values = { ':pk': streamPk(streamId, { excludeRead: true }) };
+  let condition = 'PK = :pk';
+  if (Number.isFinite(Number(cutoffUsec))) {
+    let cutoff = BigInt(Math.max(0, Math.trunc(Number(cutoffUsec))));
+    if (cutoff > MAX_INDEX_TIMESTAMP) cutoff = MAX_INDEX_TIMESTAMP;
+    values[':cutoffSk'] = (MAX_INDEX_TIMESTAMP - cutoff).toString().padStart(16, '0') + '#';
+    condition += ' AND SK >= :cutoffSk';
+  }
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: condition,
+    ExpressionAttributeValues: values,
+    ProjectionExpression: 'itemId',
+  });
+  const items = await getItems(rows.map((row) => row.itemId));
+  const matching = items.filter((item) => (
+    !item.read && Number(item.publishedUsec || 0) <= Number(cutoffUsec)
+  ));
+  const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
+  await mapLimit(matching, cap, (item) => putItemWithIndexes(item, { ...item, read: true }));
 }
 
 async function upsertItem(feedId, fields) {
@@ -254,10 +296,9 @@ function indexKeys(item) {
 }
 
 function indexSortKey(item) {
-  const max = 9999999999999999n;
   let ts;
   try { ts = BigInt(String(item.publishedUsec || 0)); } catch { ts = 0n; }
-  const rev = max - ts;
+  const rev = MAX_INDEX_TIMESTAMP - ts;
   return rev.toString().padStart(16, '0') + '#' + item.itemId;
 }
 
@@ -311,7 +352,8 @@ module.exports = {
   listStreamItems,
   getItem,
   getItems,
-  updateItems,
+  applyItemTags,
+  markStreamRead,
   upsertItem,
   updateSubscriptionFetchState,
   setSubscriptionCustomTitle,

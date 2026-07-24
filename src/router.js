@@ -220,25 +220,19 @@ async function editTag(req) {
   const ids = arrayParam(form.i).map(storage.normalizeItemId);
   const add = arrayParam(form.a);
   const rem = arrayParam(form.r);
-  await storage.updateItems((items) => {
-    for (const id of ids) {
-      const it = items[id];
-      if (!it) continue;
-      if (add.includes(STATE.READ)) it.read = true;
-      if (rem.includes(STATE.READ)) it.read = false;
-      if (add.includes(STATE.STARRED)) it.starred = true;
-      if (rem.includes(STATE.STARRED)) it.starred = false;
-      it.labels = it.labels || [];
-      for (const a of add.filter((x) => x.startsWith('user/-/label/'))) {
-        const label = a.slice('user/-/label/'.length);
-        if (!it.labels.includes(label)) it.labels.push(label);
-      }
-      for (const r of rem.filter((x) => x.startsWith('user/-/label/'))) {
-        const label = r.slice('user/-/label/'.length);
-        it.labels = it.labels.filter((x) => x !== label);
-      }
-    }
-  });
+  const removedLabels = rem
+    .filter((value) => value.startsWith('user/-/label/'))
+    .map((value) => value.slice('user/-/label/'.length));
+  const patch = {
+    read: rem.includes(STATE.READ) ? false : add.includes(STATE.READ) ? true : undefined,
+    starred: rem.includes(STATE.STARRED) ? false : add.includes(STATE.STARRED) ? true : undefined,
+    addLabels: add
+      .filter((value) => value.startsWith('user/-/label/'))
+      .map((value) => value.slice('user/-/label/'.length))
+      .filter((label) => !removedLabels.includes(label)),
+    removeLabels: removedLabels,
+  };
+  await storage.applyItemTags(ids, patch);
   return text(200, 'OK');
 }
 
@@ -246,12 +240,7 @@ async function markAllAsRead(req) {
   const form = formParams(req.body || '');
   const streamId = form.s || STATE.READING_LIST;
   const cutoffUsec = form.ts ? Math.floor(Number(form.ts) / 1000) : Infinity;
-  await storage.updateItems((items) => {
-    for (const it of Object.values(items)) {
-      if (streamId.startsWith('feed/') && it.feedId !== streamId.slice(5)) continue;
-      if (Number(it.publishedUsec || 0) <= cutoffUsec) it.read = true;
-    }
-  });
+  await storage.markStreamRead(streamId, cutoffUsec);
   return text(200, 'OK');
 }
 
