@@ -138,6 +138,26 @@ async function listStreamItems(streamId, opts = {}) {
   return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
 }
 
+async function listStreamItemIds(streamId, opts = {}) {
+  return (await listStreamItems(streamId, opts)).map((item) => String(item.itemId));
+}
+
+async function getUnreadSummary() {
+  const unread = (await listItems()).filter((item) => !item.read);
+  const summary = { count: unread.length, newestUsec: '0', feeds: [] };
+  const byFeed = new Map();
+  for (const item of unread) {
+    const publishedUsec = String(item.publishedUsec || 0);
+    if (BigInt(publishedUsec) > BigInt(summary.newestUsec)) summary.newestUsec = publishedUsec;
+    const feed = byFeed.get(String(item.feedId)) || { feedId: String(item.feedId), count: 0, newestUsec: '0' };
+    feed.count += 1;
+    if (BigInt(publishedUsec) > BigInt(feed.newestUsec)) feed.newestUsec = publishedUsec;
+    byFeed.set(feed.feedId, feed);
+  }
+  summary.feeds = [...byFeed.values()];
+  return summary;
+}
+
 async function getItem(id) {
   const state = await loadState();
   return state.items[normalizeItemId(id)] || null;
@@ -245,6 +265,8 @@ module.exports = {
   unsubscribe,
   listItems,
   listStreamItems,
+  listStreamItemIds,
+  getUnreadSummary,
   getItem,
   getItems,
   applyItemTags,

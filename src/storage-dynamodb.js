@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { BatchGetCommand, GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { documentClient, tableName } = require('./dynamodb-client');
 const { mapLimit } = require('./async-util');
 const { deleteBody } = require('./body-store');
@@ -144,31 +144,43 @@ async function listItems() {
 }
 
 async function listStreamItems(streamId, opts = {}) {
-  const pk = streamPk(streamId, opts);
-  const limit = Number(opts.limit || 20);
-  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
-  // Exact stream indexes need no filtering, so querying and hydrating more than
-  // the requested number only wastes reads. Keep headroom solely for options
-  // that filter metadata after the index query.
-  const needsPostQueryFilter = (
-    (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) ||
-    (opts.includeStarred && streamId !== 'user/-/state/com.google/starred') ||
-    opts.ot ||
-    opts.nt
-  );
-  const queryLimit = needsPostQueryFilter
+  const safeLimit = streamLimit(opts);
+  const queryLimit = needsMetadataFilter(streamId, opts)
     ? Math.min(1000, Math.max(safeLimit, safeLimit * 5))
     : safeLimit;
-  let rows = await queryAll({
-    TableName,
-    KeyConditionExpression: 'PK = :pk',
-    ExpressionAttributeValues: { ':pk': pk },
-    ScanIndexForward: opts.order === 'o' ? false : true,
-    Limit: queryLimit,
-  });
+  const rows = await queryStreamRows(streamId, opts, queryLimit);
   let items = await getItems(rows.map((row) => row.itemId));
   items = filterPostQuery(items, streamId, opts);
   return items.slice(0, safeLimit);
+}
+
+async function listStreamItemIds(streamId, opts = {}) {
+  if (needsMetadataFilter(streamId, opts)) {
+    return (await listStreamItems(streamId, opts)).map((item) => String(item.itemId));
+  }
+  const rows = await queryStreamRows(streamId, opts, streamLimit(opts));
+  return rows.map((row) => String(row.itemId));
+}
+
+async function getUnreadSummary() {
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': 'STREAM#UNREAD' },
+    ProjectionExpression: 'SK, feedId',
+  });
+  const summary = { count: rows.length, newestUsec: '0', feeds: [] };
+  const byFeed = new Map();
+  for (const row of rows) {
+    const publishedUsec = publishedUsecFromSortKey(row.SK);
+    if (BigInt(publishedUsec) > BigInt(summary.newestUsec)) summary.newestUsec = publishedUsec;
+    const feed = byFeed.get(String(row.feedId)) || { feedId: String(row.feedId), count: 0, newestUsec: '0' };
+    feed.count += 1;
+    if (BigInt(publishedUsec) > BigInt(feed.newestUsec)) feed.newestUsec = publishedUsec;
+    byFeed.set(feed.feedId, feed);
+  }
+  summary.feeds = [...byFeed.values()];
+  return summary;
 }
 
 async function getItem(id) {
@@ -177,9 +189,39 @@ async function getItem(id) {
 }
 
 async function getItems(ids) {
-  const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
-  const items = await mapLimit(ids, cap, async (id) => getItem(id));
-  return items.filter((x) => x);
+  const normalized = ids.map(normalizeItemId);
+  const uniqueIds = [...new Set(normalized)].filter(Boolean);
+  const chunks = [];
+  for (let i = 0; i < uniqueIds.length; i += 100) chunks.push(uniqueIds.slice(i, i + 100));
+  const rowsByChunk = await mapLimit(chunks, 4, batchGetItems);
+  const byId = new Map(rowsByChunk.flat().map((row) => [String(row.itemId), stripKeys(row)]));
+  return normalized.map((id) => byId.get(id)).filter(Boolean);
+}
+
+async function batchGetItems(ids) {
+  let pending = ids.map((id) => ({ PK: 'ITEM#' + id, SK: 'META' }));
+  const rows = [];
+  for (let attempt = 0; pending.length > 0 && attempt < 8; attempt += 1) {
+    const res = await ddb.send(new BatchGetCommand({
+      RequestItems: { [TableName]: { Keys: pending } },
+    }));
+    rows.push(...(res.Responses?.[TableName] || []));
+    pending = res.UnprocessedKeys?.[TableName]?.Keys || [];
+    if (pending.length > 0) await sleep(Math.min(1000, 25 * (2 ** attempt)));
+  }
+  if (pending.length > 0) {
+    const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
+    const fallback = await mapLimit(pending, cap, async (Key) => {
+      const res = await ddb.send(new GetCommand({ TableName, Key }));
+      return res.Item || null;
+    });
+    rows.push(...fallback.filter(Boolean));
+  }
+  return rows;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function applyItemTags(ids, patch) {
@@ -302,6 +344,72 @@ function indexSortKey(item) {
   return rev.toString().padStart(16, '0') + '#' + item.itemId;
 }
 
+function streamLimit(opts) {
+  const limit = Number(opts.limit || 20);
+  return Number.isFinite(limit) && limit > 0 ? limit : 20;
+}
+
+function needsMetadataFilter(streamId, opts = {}) {
+  return Boolean(
+    (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) ||
+    (opts.includeStarred && streamId !== 'user/-/state/com.google/starred')
+  );
+}
+
+async function queryStreamRows(streamId, opts, limit) {
+  const range = streamTimeRange(opts);
+  if (range.empty) return [];
+  const values = { ':pk': streamPk(streamId, opts) };
+  let condition = 'PK = :pk';
+  if (range.lower && range.upper) {
+    condition += ' AND SK BETWEEN :lower AND :upper';
+    values[':lower'] = range.lower;
+    values[':upper'] = range.upper;
+  } else if (range.lower) {
+    condition += ' AND SK >= :lower';
+    values[':lower'] = range.lower;
+  } else if (range.upper) {
+    condition += ' AND SK <= :upper';
+    values[':upper'] = range.upper;
+  }
+  return queryAll({
+    TableName,
+    KeyConditionExpression: condition,
+    ExpressionAttributeValues: values,
+    ProjectionExpression: 'itemId',
+    ScanIndexForward: opts.order === 'o' ? false : true,
+    Limit: limit,
+  });
+}
+
+function streamTimeRange(opts = {}) {
+  let lower;
+  let upper;
+  if (opts.nt) {
+    const cutoff = Math.trunc(Number(opts.nt) * 1000000);
+    if (!Number.isFinite(cutoff) || cutoff <= 0) return { empty: true };
+    const latest = BigInt(Math.min(Number(MAX_INDEX_TIMESTAMP), cutoff - 1));
+    lower = (MAX_INDEX_TIMESTAMP - latest).toString().padStart(16, '0') + '#';
+  }
+  if (opts.ot) {
+    const cutoff = Math.trunc(Number(opts.ot) * 1000000);
+    if (!Number.isFinite(cutoff) || cutoff >= Number(MAX_INDEX_TIMESTAMP)) return { empty: true };
+    const earliest = BigInt(Math.max(0, cutoff + 1));
+    upper = (MAX_INDEX_TIMESTAMP - earliest).toString().padStart(16, '0') + '#\uffff';
+  }
+  if (lower && upper && lower > upper) return { empty: true };
+  return { lower, upper, empty: false };
+}
+
+function publishedUsecFromSortKey(sk) {
+  try {
+    const reverse = BigInt(String(sk).split('#', 1)[0]);
+    return (MAX_INDEX_TIMESTAMP - reverse).toString();
+  } catch {
+    return '0';
+  }
+}
+
 function streamPk(streamId, opts = {}) {
   if (opts.excludeRead) {
     if (streamId && streamId.startsWith('feed/')) return 'STREAM#FEED#' + streamId.slice(5) + '#UNREAD';
@@ -318,8 +426,6 @@ function filterPostQuery(items, streamId, opts = {}) {
     items = items.filter((it) => !it.read);
   }
   if (opts.includeStarred && streamId !== 'user/-/state/com.google/starred') items = items.filter((it) => it.starred);
-  if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > Number(opts.ot) * 1000000);
-  if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < Number(opts.nt) * 1000000);
   return items;
 }
 
@@ -350,6 +456,8 @@ module.exports = {
   unsubscribe,
   listItems,
   listStreamItems,
+  listStreamItemIds,
+  getUnreadSummary,
   getItem,
   getItems,
   applyItemTags,

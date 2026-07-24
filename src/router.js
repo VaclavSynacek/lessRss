@@ -93,12 +93,19 @@ async function subscriptionList() {
 }
 
 async function unreadCount() {
-  const items = await storage.listItems();
-  const unread = items.filter((it) => !it.read);
-  const counts = [{ id: STATE.READING_LIST, count: unread.length, newestItemTimestampUsec: newest(unread) }];
-  const byFeed = new Map();
-  for (const it of unread) byFeed.set(it.feedId, (byFeed.get(it.feedId) || 0) + 1);
-  for (const [feedId, count] of byFeed) counts.push({ id: 'feed/' + feedId, count, newestItemTimestampUsec: newest(unread.filter((it) => it.feedId === feedId)) });
+  const summary = await storage.getUnreadSummary();
+  const counts = [{
+    id: STATE.READING_LIST,
+    count: summary.count,
+    newestItemTimestampUsec: summary.newestUsec,
+  }];
+  for (const feed of summary.feeds) {
+    counts.push({
+      id: 'feed/' + feed.feedId,
+      count: feed.count,
+      newestItemTimestampUsec: feed.newestUsec,
+    });
+  }
   return json(200, { max: counts.length, unreadcounts: counts });
 }
 
@@ -175,8 +182,9 @@ async function streamContents(streamId, params) {
 }
 
 async function streamItemIds(params) {
-  const items = await selectItems(params.get('s') || STATE.READING_LIST, params);
-  return json(200, { itemRefs: items.map((it) => ({ id: String(it.itemId) })) });
+  const streamId = params.get('s') || STATE.READING_LIST;
+  const ids = await storage.listStreamItemIds(streamId, streamOptions(params));
+  return json(200, { itemRefs: ids.map((id) => ({ id: String(id) })) });
 }
 
 async function streamItemsContents(req) {
@@ -189,8 +197,8 @@ async function streamItemsContents(req) {
   return json(200, { items: out });
 }
 
-async function selectItems(streamId, params) {
-  const opts = {
+function streamOptions(params) {
+  return {
     limit: Number(params.get('n') || 20),
     order: params.get('r') || 'd',
     excludeRead: params.get('xt') === STATE.READ,
@@ -198,6 +206,10 @@ async function selectItems(streamId, params) {
     ot: Number(params.get('ot') || 0),
     nt: Number(params.get('nt') || 0),
   };
+}
+
+async function selectItems(streamId, params) {
+  const opts = streamOptions(params);
   if (storage.listStreamItems) return storage.listStreamItems(streamId, opts);
 
   let items = await storage.listItems();
@@ -242,10 +254,6 @@ async function markAllAsRead(req) {
   const cutoffUsec = form.ts ? Math.floor(Number(form.ts) / 1000) : Infinity;
   await storage.markStreamRead(streamId, cutoffUsec);
   return text(200, 'OK');
-}
-
-function newest(items) {
-  return String(Math.max(0, ...items.map((it) => Number(it.publishedUsec || 0))));
 }
 
 function sortId(s) {
