@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { BatchGetCommand, GetCommand, PutCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { BatchGetCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { documentClient, tableName } = require('./dynamodb-client');
 const { mapLimit } = require('./async-util');
 const { deleteBody } = require('./body-store');
@@ -114,19 +114,43 @@ async function deleteItemFully(itemId) {
 }
 
 async function setSubscriptionCustomTitle(feedId, customTitle) {
-  const old = await getAnySubscription(feedId);
-  if (!old) return null;
-  const next = { ...old, customTitle: String(customTitle || ''), updatedAt: Date.now() };
-  await putEntity('USER', 'SUB#' + feedId, 'subscription', next);
-  return next;
+  return updateSubscriptionFields(feedId, { customTitle: String(customTitle || '') });
 }
 
 async function updateSubscriptionFetchState(feedId, patch) {
-  const old = await getAnySubscription(feedId);
-  if (!old) return null;
-  const next = { ...old, ...patch, updatedAt: Date.now() };
-  await putEntity('USER', 'SUB#' + feedId, 'subscription', next);
-  return next;
+  const allowed = ['etag', 'lastModified', 'feedTitle', 'feedHtmlUrl'];
+  return updateSubscriptionFields(feedId, Object.fromEntries(
+    Object.entries(patch).filter(([key]) => allowed.includes(key))
+  ));
+}
+
+async function updateSubscriptionFields(feedId, patch) {
+  const values = { ':updatedAt': Date.now() };
+  const names = { '#updatedAt': 'updatedAt' };
+  const assignments = ['#updatedAt = :updatedAt'];
+  let index = 0;
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    names['#field' + index] = key;
+    values[':field' + index] = value;
+    assignments.push('#field' + index + ' = :field' + index);
+    index += 1;
+  }
+  try {
+    const res = await ddb.send(new UpdateCommand({
+      TableName,
+      Key: { PK: 'USER', SK: 'SUB#' + feedId },
+      UpdateExpression: 'SET ' + assignments.join(', '),
+      ConditionExpression: 'attribute_exists(PK)',
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_NEW',
+    }));
+    return res.Attributes ? stripKeys(res.Attributes) : null;
+  } catch (e) {
+    if (e.name === 'ConditionalCheckFailedException') return null;
+    throw e;
+  }
 }
 
 async function getAnySubscription(feedId) {
@@ -229,27 +253,17 @@ async function applyItemTags(ids, patch) {
   const current = await getItems(uniqueIds);
   const changes = [];
   for (const old of current) {
-    const item = structuredClone(old);
-    let changed = false;
-    if (patch.read !== undefined && item.read !== patch.read) {
-      item.read = patch.read;
-      changed = true;
-    }
-    if (patch.starred !== undefined && item.starred !== patch.starred) {
-      item.starred = patch.starred;
-      changed = true;
-    }
-    const oldLabels = item.labels || [];
+    const fields = {};
+    if (patch.read !== undefined && old.read !== patch.read) fields.read = patch.read;
+    if (patch.starred !== undefined && old.starred !== patch.starred) fields.starred = patch.starred;
+    const oldLabels = old.labels || [];
     const labels = oldLabels.filter((label) => !(patch.removeLabels || []).includes(label));
     for (const label of patch.addLabels || []) if (!labels.includes(label)) labels.push(label);
-    if (labels.length !== oldLabels.length || labels.some((label, i) => label !== oldLabels[i])) {
-      item.labels = labels;
-      changed = true;
-    }
-    if (changed) changes.push({ old, item });
+    if (labels.length !== oldLabels.length || labels.some((label, i) => label !== oldLabels[i])) fields.labels = labels;
+    if (Object.keys(fields).length > 0) changes.push({ itemId: old.itemId, fields });
   }
   const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
-  await mapLimit(changes, cap, ({ old, item }) => putItemWithIndexes(old, item));
+  await mapLimit(changes, cap, ({ itemId, fields }) => updateItemStateFields(itemId, fields));
 }
 
 async function markStreamRead(streamId, cutoffUsec = Infinity) {
@@ -273,35 +287,93 @@ async function markStreamRead(streamId, cutoffUsec = Infinity) {
     !item.read && Number(item.publishedUsec || 0) <= Number(cutoffUsec)
   ));
   const cap = Number(process.env.LESSRSS_DDB_GET_CONCURRENCY) || 20;
-  await mapLimit(matching, cap, (item) => putItemWithIndexes(item, { ...item, read: true }));
+  await mapLimit(matching, cap, (item) => updateItemStateFields(item.itemId, { read: true }));
+}
+
+async function updateItemStateFields(itemId, fields) {
+  const names = {};
+  const values = {};
+  const assignments = [];
+  let index = 0;
+  for (const [key, value] of Object.entries(fields)) {
+    names['#field' + index] = key;
+    values[':field' + index] = value;
+    assignments.push('#field' + index + ' = :field' + index);
+    index += 1;
+  }
+  if (assignments.length === 0) return null;
+  try {
+    const res = await ddb.send(new UpdateCommand({
+      TableName,
+      Key: { PK: 'ITEM#' + itemId, SK: 'META' },
+      UpdateExpression: 'SET ' + assignments.join(', '),
+      ConditionExpression: 'attribute_exists(PK)',
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+      ReturnValues: 'ALL_OLD',
+    }));
+    if (!res.Attributes) return null;
+    const old = stripKeys(res.Attributes);
+    const item = { ...old, ...fields };
+    await updateItemIndexes(old, item);
+    return item;
+  } catch (e) {
+    if (e.name === 'ConditionalCheckFailedException') return null;
+    throw e;
+  }
 }
 
 async function upsertItem(feedId, fields) {
   const itemId = fields.itemId || itemIdFor(feedId, fields.guid || fields.url || fields.title);
-  const oldRes = await ddb.send(new GetCommand({ TableName, Key: { PK: 'ITEM#' + itemId, SK: 'META' } }));
-  const old = oldRes.Item ? stripKeys(oldRes.Item) : {};
-  const item = {
-    ...old,
-    ...fields,
+  const updates = {
+    ...Object.fromEntries(Object.entries(fields).filter(([key]) => !['PK', 'SK', 'entity', 'read', 'starred', 'labels'].includes(key))),
     itemId,
     itemHex: BigInt(itemId).toString(16).padStart(16, '0'),
     feedId,
-    read: old.read === undefined ? false : old.read,
-    starred: old.starred || false,
-    labels: old.labels || [],
+    entity: 'item',
     updatedAt: Date.now(),
   };
-  await putItemWithIndexes(old, item);
+  const names = { '#read': 'read', '#starred': 'starred', '#labels': 'labels' };
+  const values = { ':false': false, ':labels': [] };
+  const assignments = [
+    '#read = if_not_exists(#read, :false)',
+    '#starred = if_not_exists(#starred, :false)',
+    '#labels = if_not_exists(#labels, :labels)',
+  ];
+  let index = 0;
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) continue;
+    names['#field' + index] = key;
+    values[':field' + index] = value;
+    assignments.push('#field' + index + ' = :field' + index);
+    index += 1;
+  }
+  const res = await ddb.send(new UpdateCommand({
+    TableName,
+    Key: { PK: 'ITEM#' + itemId, SK: 'META' },
+    UpdateExpression: 'SET ' + assignments.join(', '),
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+    ReturnValues: 'ALL_OLD',
+  }));
+  const old = res.Attributes ? stripKeys(res.Attributes) : {};
+  const item = {
+    ...old,
+    ...updates,
+    read: old.read === undefined ? false : old.read,
+    starred: old.starred === undefined ? false : old.starred,
+    labels: old.labels || [],
+  };
+  await updateItemIndexes(old, item);
   return item;
 }
 
-async function putItemWithIndexes(oldItem, item) {
+async function updateItemIndexes(oldItem, item) {
   const oldKeys = indexKeys(oldItem || {});
   const newKeys = indexKeys(item);
   const oldSet = new Set(oldKeys.map(keyString));
   const newSet = new Set(newKeys.map(keyString));
   for (const key of oldKeys) if (!newSet.has(keyString(key))) await deleteKey(key.PK, key.SK);
-  await putEntity('ITEM#' + item.itemId, 'META', 'item', item);
   for (const key of newKeys) {
     if (oldSet.has(keyString(key))) continue;
     await ddb.send(new PutCommand({ TableName, Item: { ...key, entity: 'streamItem', itemId: String(item.itemId), feedId: item.feedId } }));
