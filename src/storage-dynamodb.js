@@ -144,19 +144,26 @@ async function listItems() {
 
 async function listStreamItems(streamId, opts = {}) {
   const pk = streamPk(streamId, opts);
-  // Pull enough stream-index rows to satisfy the requested limit plus headroom
-  // for client-side filtering (filterPostQuery may drop rows for label/starred/
-  // time-range views). Avoids fetching and hydrating the entire stream when the
-  // caller only wants the first page.
   const limit = Number(opts.limit || 20);
   const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 20;
-  const oversample = Math.min(1000, Math.max(safeLimit, safeLimit * 5));
+  // Exact stream indexes need no filtering, so querying and hydrating more than
+  // the requested number only wastes reads. Keep headroom solely for options
+  // that filter metadata after the index query.
+  const needsPostQueryFilter = (
+    (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) ||
+    (opts.includeStarred && streamId !== 'user/-/state/com.google/starred') ||
+    opts.ot ||
+    opts.nt
+  );
+  const queryLimit = needsPostQueryFilter
+    ? Math.min(1000, Math.max(safeLimit, safeLimit * 5))
+    : safeLimit;
   let rows = await queryAll({
     TableName,
     KeyConditionExpression: 'PK = :pk',
     ExpressionAttributeValues: { ':pk': pk },
     ScanIndexForward: opts.order === 'o' ? false : true,
-    Limit: oversample,
+    Limit: queryLimit,
   });
   let items = await getItems(rows.map((row) => row.itemId));
   items = filterPostQuery(items, streamId, opts);
