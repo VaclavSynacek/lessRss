@@ -38,3 +38,5 @@ With AWS credentials configured, initialize and apply this configuration using T
 
 The deployment creates Lambda functions, a public Lambda Function URL, DynamoDB and S3 storage, and an EventBridge refresh schedule. API requests still require lessRss application-level authentication. Destroying the stack removes its AWS resources and stored feed data. AWS usage may incur charges.
 
+**Data retention:** Article metadata and DynamoDB stream indexes expire 365 days after the article's publication date, regardless of read, unread, starred, or label state. Article bodies in S3 expire after 396 days. Expiration is asynchronous, so data may remain visible briefly after these periods. Feed entries without a usable publication date use their first ingestion time.
+
