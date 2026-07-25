@@ -23,10 +23,32 @@ resource "aws_dynamodb_table" "main" {
     name = "SK"
     type = "S"
   }
+
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
 }
 
 resource "aws_s3_bucket" "bodies" {
   bucket = "${local.name_suffix}-bodies"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "bodies" {
+  bucket = aws_s3_bucket.bodies.id
+
+  rule {
+    id     = "expire-item-bodies"
+    status = "Enabled"
+
+    filter {
+      prefix = "items/"
+    }
+
+    expiration {
+      days = 396
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "bodies" {

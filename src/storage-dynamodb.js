@@ -9,6 +9,7 @@ const { deleteBody } = require('./body-store');
 const ddb = documentClient();
 const TableName = tableName();
 const MAX_INDEX_TIMESTAMP = 9999999999999999n;
+const ITEM_RETENTION_SECONDS = 365 * 24 * 60 * 60;
 
 function hashHex(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');
@@ -331,6 +332,7 @@ async function upsertItem(feedId, fields) {
     itemHex: BigInt(itemId).toString(16).padStart(16, '0'),
     feedId,
     entity: 'item',
+    expiresAt: expiresAtForPublishedUsec(fields.publishedUsec),
     updatedAt: Date.now(),
   };
   const names = { '#read': 'read', '#starred': 'starred', '#labels': 'labels' };
@@ -376,7 +378,16 @@ async function updateItemIndexes(oldItem, item) {
   for (const key of oldKeys) if (!newSet.has(keyString(key))) await deleteKey(key.PK, key.SK);
   for (const key of newKeys) {
     if (oldSet.has(keyString(key))) continue;
-    await ddb.send(new PutCommand({ TableName, Item: { ...key, entity: 'streamItem', itemId: String(item.itemId), feedId: item.feedId } }));
+    await ddb.send(new PutCommand({
+      TableName,
+      Item: {
+        ...key,
+        entity: 'streamItem',
+        itemId: String(item.itemId),
+        feedId: item.feedId,
+        expiresAt: item.expiresAt || expiresAtForPublishedUsec(item.publishedUsec),
+      },
+    }));
   }
 }
 
@@ -407,6 +418,11 @@ function indexKeys(item) {
   if (item.starred) keys.push({ PK: 'STREAM#STARRED', SK: sk });
   for (const label of item.labels || []) keys.push({ PK: 'STREAM#LABEL#' + label, SK: sk });
   return keys;
+}
+
+function expiresAtForPublishedUsec(publishedUsec) {
+  const publishedSeconds = Math.floor(Number(publishedUsec || 0) / 1000000);
+  return publishedSeconds + ITEM_RETENTION_SECONDS;
 }
 
 function indexSortKey(item) {
