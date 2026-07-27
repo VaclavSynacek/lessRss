@@ -6,6 +6,13 @@ const { mapLimit } = require('./async-util');
 const storage = require('./storage');
 const { putBody } = require('./body-store');
 const { absoluteUrl, sanitizeArticleHtml } = require('./html-sanitize');
+const {
+  MAX_FEED_BYTES,
+  MAX_REDIRECTS,
+  httpUrl,
+  isOversizedAttribute,
+  truncateUtf8,
+} = require('./feed-security');
 
 const feedParser = new Parser({
   customFields: {
@@ -31,8 +38,11 @@ async function refreshSubscription(sub) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), feedTimeoutMs());
   let res;
+  let finalUrl;
+  let xml;
   try {
-    res = await fetch(sub.url, { headers, signal: ctrl.signal });
+    ({ res, finalUrl } = await fetchWithRedirectLimit(sub.url, headers, ctrl.signal));
+    if (res.status !== 304 && res.ok) xml = await readBoundedText(res);
   } catch (e) {
     const message = e.name === 'AbortError' ? `fetch timeout after ${feedTimeoutMs()}ms` : e.message;
     throw new Error(message);
@@ -50,8 +60,7 @@ async function refreshSubscription(sub) {
     throw new Error(`fetch ${sub.url} HTTP ${res.status}`);
   }
 
-  const xml = await res.text();
-  const parsed = await parseFeed(xml);
+  const parsed = await parseFeed(xml, finalUrl);
   const metadataPatch = subscriptionMetadataPatch(sub, parsed);
   const effectiveSub = {
     ...sub,
@@ -70,8 +79,8 @@ async function refreshSubscription(sub) {
   // Only persist fetch state when the caching headers actually changed.
   // This keeps steady-state refreshes (200 with same etag/last-modified) free
   // of subscription-row writes, matching the no-write-on-no-change rule.
-  const nextEtag = res.headers.get('etag') || sub.etag || '';
-  const nextLastModified = res.headers.get('last-modified') || sub.lastModified || '';
+  const nextEtag = truncateUtf8(res.headers.get('etag') || sub.etag || '');
+  const nextLastModified = truncateUtf8(res.headers.get('last-modified') || sub.lastModified || '');
   const subscriptionPatch = { ...metadataPatch };
   if (nextEtag !== (sub.etag || '')) subscriptionPatch.etag = nextEtag;
   if (nextLastModified !== (sub.lastModified || '')) subscriptionPatch.lastModified = nextLastModified;
@@ -86,6 +95,49 @@ function subscriptionMetadataPatch(sub, parsed) {
   if (parsed.title && parsed.title !== sub.feedTitle) patch.feedTitle = parsed.title;
   if (parsed.link && parsed.link !== sub.feedHtmlUrl) patch.feedHtmlUrl = parsed.link;
   return patch;
+}
+
+async function fetchWithRedirectLimit(startUrl, headers, signal) {
+  let currentUrl = httpUrl(startUrl);
+  if (!currentUrl) throw new Error('feed URL must use HTTP or HTTPS');
+  const initialOrigin = new URL(currentUrl).origin;
+
+  for (let redirects = 0; ; redirects += 1) {
+    const requestHeaders = new URL(currentUrl).origin === initialOrigin
+      ? headers
+      : { 'User-Agent': headers['User-Agent'] };
+    const res = await fetch(currentUrl, { headers: requestHeaders, redirect: 'manual', signal });
+    if (![301, 302, 303, 307, 308].includes(res.status)) return { res, finalUrl: currentUrl };
+    if (redirects >= MAX_REDIRECTS) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`too many redirects (maximum ${MAX_REDIRECTS})`);
+    }
+    const nextUrl = httpUrl(res.headers.get('location'), currentUrl);
+    await res.body?.cancel().catch(() => {});
+    if (!nextUrl) throw new Error('redirect URL must use HTTP or HTTPS');
+    currentUrl = nextUrl;
+  }
+}
+
+async function readBoundedText(res) {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_FEED_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`feed exceeds ${MAX_FEED_BYTES} bytes`);
+  }
+
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of res.body || []) {
+    const bytes = Buffer.from(chunk);
+    total += bytes.length;
+    if (total > MAX_FEED_BYTES) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`feed exceeds ${MAX_FEED_BYTES} bytes`);
+    }
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 async function refreshItem(sub, parsedItem, feedHtmlUrl = '') {
@@ -177,25 +229,31 @@ function latestItems(items, limit) {
     .map((x) => x.item);
 }
 
-async function parseFeed(xml) {
+async function parseFeed(xml, sourceUrl = '') {
   const parsed = await feedParser.parseString(xml);
   const isAtom = /<feed[\s>]/i.test(xml);
+  const feedLink = httpUrl(parsed.link || parsed.feedUrl || '', sourceUrl);
   return {
-    title: parsed.title || '',
-    link: parsed.link || parsed.feedUrl || '',
-    items: (parsed.items || []).map((item) => normalizeParsedItem(item, isAtom)),
+    title: truncateUtf8(parsed.title || ''),
+    link: feedLink,
+    items: (parsed.items || [])
+      .map((item) => normalizeParsedItem(item, isAtom, feedLink || sourceUrl))
+      .filter(Boolean),
   };
 }
 
-function normalizeParsedItem(item, isAtom) {
+function normalizeParsedItem(item, isAtom, baseUrl) {
+  const rawGuid = item.guid || item.id || '';
+  const rawLink = item.link || '';
+  if (isOversizedAttribute(rawGuid) || isOversizedAttribute(rawLink)) return null;
   return {
-    title: item.title || '',
-    description: isAtom ? (item.summary || '') : (item.content || ''),
-    content: isAtom ? (item.content || '') : (item.contentEncoded || ''),
-    link: item.link || '',
-    guid: item.guid || item.id || '',
-    pubDate: item.isoDate || item.pubDate || '',
-    author: item.creator || item.dcCreator || item.author || '',
+    title: truncateUtf8(item.title || ''),
+    description: String(isAtom ? (item.summary || '') : (item.content || '')),
+    content: String(isAtom ? (item.content || '') : (item.contentEncoded || '')),
+    link: httpUrl(rawLink, baseUrl),
+    guid: truncateUtf8(rawGuid),
+    pubDate: truncateUtf8(item.isoDate || item.pubDate || ''),
+    author: truncateUtf8(item.creator || item.dcCreator || item.author || ''),
   };
 }
 

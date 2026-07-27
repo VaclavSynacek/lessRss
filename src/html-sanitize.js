@@ -1,6 +1,7 @@
 'use strict';
 
 const sanitizeHtml = require('sanitize-html');
+const { MAX_FEED_BYTES, httpUrl, truncateUtf8 } = require('./feed-security');
 
 const allowedTags = [
   ...sanitizeHtml.defaults.allowedTags,
@@ -8,7 +9,6 @@ const allowedTags = [
   'canvas',
   'details',
   'dialog',
-  'iframe',
   'img',
   'picture',
   'source',
@@ -34,7 +34,6 @@ const allowedAttributes = {
   col: ['span', 'align', 'valign', 'width'],
   colgroup: ['span', 'align', 'valign', 'width'],
   del: ['cite', 'datetime'],
-  iframe: ['allow', 'allowfullscreen', 'align', 'frameborder', 'height', 'longdesc', 'marginheight', 'marginwidth', 'sandbox', 'scrolling', 'src', 'width'],
   img: ['align', 'alt', 'border', 'height', 'hspace', 'loading', 'longdesc', 'src', 'srcset', 'title', 'vspace', 'width'],
   ins: ['cite', 'datetime'],
   li: ['type', 'value'],
@@ -61,7 +60,6 @@ const urlAttributes = {
   audio: ['src'],
   blockquote: ['cite'],
   del: ['cite'],
-  iframe: ['longdesc', 'src'],
   img: ['longdesc', 'src'],
   ins: ['cite'],
   q: ['cite'],
@@ -72,18 +70,17 @@ const urlAttributes = {
 
 function sanitizeArticleHtml(html, baseUrl = '') {
   if (!html) return '';
-  return sanitizeHtml(String(html), {
+  const sanitized = sanitizeHtml(String(html), {
     allowedTags,
     allowedAttributes,
-    allowedSchemes: ['http', 'https', 'ftp', 'mailto', 'tel'],
-    allowedSchemesByTag: { img: ['http', 'https', 'data'] },
+    allowedSchemes: ['http', 'https'],
     allowProtocolRelative: true,
     allowAriaAttributes: true,
-    allowedIframeHostnames: false,
     transformTags: {
       '*': (tagName, attribs) => transformTag(tagName, attribs, baseUrl),
     },
   });
+  return truncateUtf8(sanitized, MAX_FEED_BYTES);
 }
 
 function transformTag(tagName, attribs, baseUrl) {
@@ -99,7 +96,10 @@ function transformTag(tagName, attribs, baseUrl) {
   }
 
   for (const attr of urlAttributes[tagName] || []) {
-    if (out[attr]) out[attr] = absoluteUrl(out[attr], baseUrl);
+    if (!out[attr]) continue;
+    const url = httpUrl(out[attr], baseUrl, { allowFragment: tagName === 'a' && attr === 'href' });
+    if (url) out[attr] = url;
+    else delete out[attr];
   }
   if (out.srcset) out.srcset = absoluteSrcset(out.srcset, baseUrl);
 
@@ -107,25 +107,11 @@ function transformTag(tagName, attribs, baseUrl) {
     if (!out.controls) out.controls = 'controls';
     if (!out.preload) out.preload = 'none';
   }
-  if (tagName === 'iframe') {
-    if (!out.sandbox) out.sandbox = 'allow-scripts allow-same-origin';
-    if (!out.allow) out.allow = 'accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
-    if (!out.allowfullscreen) out.allowfullscreen = 'allowfullscreen';
-  }
-
   return { tagName, attribs: out };
 }
 
 function absoluteUrl(value, baseUrl = '') {
-  const s = String(value || '').trim();
-  if (!s || s.startsWith('#')) return s;
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(s)) return s;
-  if (!baseUrl) return s;
-  try {
-    return new URL(s, baseUrl).href;
-  } catch {
-    return s;
-  }
+  return httpUrl(value, baseUrl, { allowFragment: true });
 }
 
 function absoluteSrcset(srcset, baseUrl = '') {
@@ -133,8 +119,8 @@ function absoluteSrcset(srcset, baseUrl = '') {
     const trimmed = part.trim();
     if (!trimmed) return '';
     const pieces = trimmed.split(/\s+/);
-    pieces[0] = absoluteUrl(pieces[0], baseUrl);
-    return pieces.join(' ');
+    pieces[0] = httpUrl(pieces[0], baseUrl);
+    return pieces[0] ? pieces.join(' ') : '';
   }).filter(Boolean).join(', ');
 }
 

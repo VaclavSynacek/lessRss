@@ -7,6 +7,7 @@ const storage = require('./storage');
 const { mapLimit } = require('./async-util');
 const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
 const { refreshAll } = require('./crawler');
+const { httpUrl, truncateUtf8 } = require('./feed-security');
 
 // Cap on simultaneous S3 body fetches per stream read. Bounded to avoid
 // fanning out hundreds of connections for large n= requests while still
@@ -115,10 +116,9 @@ async function subscriptionEdit(req) {
   const streams = arrayParam(form.s);
   if (!ac || streams.length === 0) return badRequest('missing ac or s');
   if (ac === 'subscribe') {
-    for (const s of streams) {
-      const url = String(s).replace(/^feed\//, '');
-      await storage.subscribe(url, form.t);
-    }
+    const urls = streams.map((s) => httpUrl(String(s).replace(/^feed\//, '')));
+    if (urls.some((url) => !url)) return badRequest('feed URL must use HTTP or HTTPS');
+    for (const url of urls) await storage.subscribe(url, truncateUtf8(form.t));
     return text(200, 'OK');
   }
   if (ac === 'unsubscribe') {
@@ -129,7 +129,7 @@ async function subscriptionEdit(req) {
     const titles = arrayParam(form.t);
     for (let i = 0; i < streams.length; i += 1) {
       if (titles.length === 0) continue;
-      const title = titles[Math.min(i, titles.length - 1)];
+      const title = truncateUtf8(titles[Math.min(i, titles.length - 1)]);
       const feedId = String(streams[i]).replace(/^feed\//, '');
       await storage.setSubscriptionCustomTitle(feedId, title);
     }
@@ -141,7 +141,9 @@ async function subscriptionEdit(req) {
 async function quickAdd(req) {
   const form = formParams(req.body || '');
   if (!form.quickadd) return badRequest('missing quickadd');
-  const sub = await storage.subscribe(form.quickadd);
+  const url = httpUrl(form.quickadd);
+  if (!url) return badRequest('feed URL must use HTTP or HTTPS');
+  const sub = await storage.subscribe(url);
   return json(200, { numResults: 1, query: form.quickadd, streamId: sub.id, streamName: subscriptionTitle(sub) });
 }
 
@@ -156,8 +158,8 @@ async function subscriptionImport(req) {
   let opml = req.body || '';
   if (contentType.includes('application/x-www-form-urlencoded')) opml = formParams(req.body || '').opml || '';
   for (const m of opml.matchAll(/xmlUrl=["']([^"']+)["'][^>]*(?:title|text)=["']([^"']*)["']|(?:title|text)=["']([^"']*)["'][^>]*xmlUrl=["']([^"']+)["']/gi)) {
-    const url = unesc(m[1] || m[4]);
-    const title = unesc(m[2] || m[3] || url);
+    const url = httpUrl(unesc(m[1] || m[4]));
+    const title = truncateUtf8(unesc(m[2] || m[3] || url));
     if (url) await storage.subscribe(url, title);
   }
   await refreshAll().catch((e) => console.error('subscription/import: background refresh failed', e.message));
