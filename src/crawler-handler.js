@@ -2,6 +2,7 @@
 
 const { refreshAll, refreshSubscription } = require('./crawler');
 const storage = require('./storage');
+const { backupSubscriptions } = require('./opml-backup');
 
 async function handler(event = {}) {
   const detail = event.detail || event;
@@ -10,9 +11,14 @@ async function handler(event = {}) {
     if (!sub) return { ok: false, error: 'subscription not found', feedId: detail.feedId };
     return refreshSubscription(sub);
   }
+  const backup = await backupSubscriptions().catch((e) => {
+    console.error('OPML backup failed', e);
+    return { ok: false, error: e.message };
+  });
   const results = await refreshAll();
   return {
-    ok: results.every((r) => r.ok),
+    ok: backup.ok && results.every((r) => r.ok),
+    backup,
     count: results.length,
     results,
   };

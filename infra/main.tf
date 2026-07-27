@@ -59,6 +59,39 @@ resource "aws_s3_bucket_public_access_block" "bodies" {
   restrict_public_buckets = true
 }
 
+# S3 bucket names must be lowercase, so this is the lowercase form of the
+# requested lessRss-OPML-backup prefix.
+resource "aws_s3_bucket" "opml_backup" {
+  bucket        = "lessrss-opml-backup-${random_id.suffix.hex}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "opml_backup" {
+  bucket = aws_s3_bucket.opml_backup.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "opml_backup" {
+  bucket = aws_s3_bucket.opml_backup.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "opml_backup" {
+  bucket                  = aws_s3_bucket.opml_backup.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/lambda/${local.name_suffix}-api"
   retention_in_days = 14
@@ -117,6 +150,14 @@ data "aws_iam_policy_document" "lambda" {
     ]
     resources = ["${aws_s3_bucket.bodies.arn}/*"]
   }
+
+  statement {
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject"
+    ]
+    resources = ["${aws_s3_bucket.opml_backup.arn}/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {
@@ -151,6 +192,7 @@ locals {
     LESSRSS_DDB_TABLE           = aws_dynamodb_table.main.name
     LESSRSS_BODY_STORE          = "s3"
     LESSRSS_BODY_BUCKET         = aws_s3_bucket.bodies.bucket
+    LESSRSS_OPML_BACKUP_BUCKET  = aws_s3_bucket.opml_backup.bucket
     LESSRSS_CRAWLER_CONCURRENCY = tostring(var.crawler_concurrency)
     LESSRSS_FEED_TIMEOUT_MS     = tostring(var.crawler_feed_timeout_ms)
     GREADER_USER                = var.greader_user

@@ -15,6 +15,10 @@ output "body_bucket" {
   value = aws_s3_bucket.bodies.bucket
 }
 
+output "opml_backup_bucket" {
+  value = aws_s3_bucket.opml_backup.bucket
+}
+
 output "api_lambda_name" {
   value = aws_lambda_function.api.function_name
 }

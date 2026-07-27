@@ -8,6 +8,7 @@ const { mapLimit } = require('./async-util');
 const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
 const { refreshAll } = require('./crawler');
 const { httpUrl, truncateUtf8 } = require('./feed-security');
+const { subscriptionsToOpml } = require('./opml');
 
 // Cap on simultaneous S3 body fetches per stream read. Bounded to avoid
 // fanning out hundreds of connections for large n= requests while still
@@ -148,9 +149,7 @@ async function quickAdd(req) {
 }
 
 async function subscriptionExport() {
-  const subs = await storage.listSubscriptions();
-  const outlines = subs.map((s) => `    <outline type="rss" text="${esc(subscriptionTitle(s))}" title="${esc(subscriptionTitle(s))}" xmlUrl="${esc(s.url)}" htmlUrl="${esc(subscriptionHtmlUrl(s))}"/>`).join('\n');
-  return xml(200, `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head><title>lessRss</title></head>\n  <body>\n${outlines}\n  </body>\n</opml>\n`);
+  return xml(200, subscriptionsToOpml(await storage.listSubscriptions()));
 }
 
 async function subscriptionImport(req) {
@@ -262,10 +261,6 @@ function sortId(s) {
   let n = 0;
   for (const ch of String(s)) n = ((n * 31) + ch.charCodeAt(0)) >>> 0;
   return n.toString(16).padStart(8, '0');
-}
-
-function esc(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function unesc(s) {
