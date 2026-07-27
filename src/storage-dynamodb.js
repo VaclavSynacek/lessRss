@@ -25,8 +25,13 @@ function itemIdFor(feedId, guid) {
 
 function normalizeItemId(id) {
   id = String(id || '');
-  const m = /\/item\/([0-9a-fA-F]+)$/.exec(id);
-  if (m) return BigInt('0x' + m[1]).toString(10);
+  const tagged = /\/item\/([0-9a-fA-F]+)$/.exec(id);
+  if (tagged) return BigInt('0x' + tagged[1]).toString(10);
+  // FreshRSS also accepts the bare hexadecimal suffix used by FeedFlow.
+  // Unprefixed digit-only values without a leading zero are decimal IDs.
+  if (/^[0-9a-fA-F]+$/.test(id) && (!/^\d+$/.test(id) || id.startsWith('0'))) {
+    return BigInt('0x' + id).toString(10);
+  }
   return id;
 }
 
