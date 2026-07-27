@@ -7,6 +7,7 @@ const storage = require('./storage');
 const { mapLimit } = require('./async-util');
 const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
 const { refreshAll } = require('./crawler');
+const { discoverFeed } = require('./feed-discovery');
 const { httpUrl, truncateUtf8 } = require('./feed-security');
 const { subscriptionsToOpml } = require('./opml');
 
@@ -142,9 +143,24 @@ async function subscriptionEdit(req) {
 async function quickAdd(req) {
   const form = formParams(req.body || '');
   if (!form.quickadd) return badRequest('missing quickadd');
-  const url = httpUrl(form.quickadd);
+  const url = httpUrl(String(form.quickadd).replace(/^feed\//, ''));
   if (!url) return badRequest('feed URL must use HTTP or HTTPS');
-  const sub = await storage.subscribe(url);
+
+  let discovered;
+  try {
+    discovered = await discoverFeed(url);
+  } catch (e) {
+    return json(200, { numResults: 0, query: form.quickadd, error: e.message });
+  }
+
+  let sub = await storage.subscribe(discovered.url);
+  const metadata = {};
+  if (discovered.parsed.title) metadata.feedTitle = discovered.parsed.title;
+  if (discovered.parsed.link) metadata.feedHtmlUrl = discovered.parsed.link;
+  if (Object.keys(metadata).length > 0 && storage.updateSubscriptionFetchState) {
+    await storage.updateSubscriptionFetchState(sub.feedId, metadata);
+    sub = { ...sub, ...metadata };
+  }
   return json(200, { numResults: 1, query: form.quickadd, streamId: sub.id, streamName: subscriptionTitle(sub) });
 }
 
