@@ -184,7 +184,13 @@ async function subscriptionImport(req) {
   const contentType = req.headers['content-type'] || req.headers['Content-Type'] || '';
   let opml = req.body || '';
   if (contentType.includes('application/x-www-form-urlencoded')) opml = formParams(req.body || '').opml || '';
-  for (const entry of parseOpmlSubscriptions(opml)) {
+  let entries;
+  try {
+    entries = parseOpmlSubscriptions(opml);
+  } catch {
+    return badRequest('Invalid OPML');
+  }
+  for (const entry of entries) {
     const url = httpUrl(entry.url);
     if (!url) continue;
     const sub = await storage.subscribe(url, truncateUtf8(entry.title || url));

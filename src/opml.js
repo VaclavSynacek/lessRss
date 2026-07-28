@@ -1,5 +1,6 @@
 'use strict';
 
+const sax = require('sax');
 const { subscriptionTitle, subscriptionHtmlUrl } = require('./greader-format');
 const { labelName, normalizeCategories } = require('./labels');
 
@@ -34,53 +35,50 @@ function subscriptionOutline(sub) {
 
 function parseOpmlSubscriptions(xml) {
   const entries = new Map();
-  const stack = [];
-  const tags = String(xml || '').match(/<\/?outline\b[^>]*>/gi) || [];
-  for (const tag of tags) {
-    if (/^<\/outline/i.test(tag)) {
-      stack.pop();
-      continue;
-    }
-    const attrs = parseAttributes(tag);
-    const selfClosing = /\/\s*>$/.test(tag);
-    const url = decodeXml(attrs.xmlurl || '');
-    if (url) {
-      const title = decodeXml(attrs.title || attrs.text || url);
-      const labels = stack.map(labelName).filter(Boolean);
-      const key = url;
-      const existing = entries.get(key) || { url, title, labels: [] };
-      if (!existing.title && title) existing.title = title;
-      for (const label of labels) if (!existing.labels.includes(label)) existing.labels.push(label);
-      entries.set(key, existing);
-    }
-    if (!selfClosing) stack.push(url ? '' : decodeXml(attrs.title || attrs.text || ''));
-  }
-  return [...entries.values()];
-}
+  const categoryStack = [];
+  let sawOpml = false;
+  let sawBody = false;
+  let inBody = false;
 
-function parseAttributes(tag) {
-  const out = {};
-  const pattern = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-  let match;
-  while ((match = pattern.exec(tag)) !== null) out[match[1].toLowerCase()] = match[2] ?? match[3] ?? '';
-  return out;
+  const parser = sax.parser(true, {
+    normalize: false,
+    strictEntities: true,
+    trim: false,
+  });
+  parser.onopentag = (node) => {
+    const name = node.name.toLowerCase();
+    if (name === 'opml') sawOpml = true;
+    if (name === 'body' && sawOpml) {
+      sawBody = true;
+      inBody = true;
+    }
+    if (name !== 'outline' || !inBody) return;
+
+    const attrs = Object.fromEntries(Object.entries(node.attributes).map(([key, value]) => (
+      [key.toLowerCase(), String(value)]
+    )));
+    const url = attrs.xmlurl || '';
+    if (url) {
+      const title = attrs.title || attrs.text || url;
+      const labels = categoryStack.map(labelName).filter(Boolean);
+      const existing = entries.get(url) || { url, title, labels: [] };
+      for (const label of labels) if (!existing.labels.includes(label)) existing.labels.push(label);
+      entries.set(url, existing);
+    }
+    categoryStack.push(url ? '' : (attrs.title || attrs.text || ''));
+  };
+  parser.onclosetag = (name) => {
+    name = name.toLowerCase();
+    if (name === 'outline' && inBody) categoryStack.pop();
+    if (name === 'body') inBody = false;
+  };
+  parser.write(String(xml || '')).close();
+  if (!sawOpml || !sawBody) throw new Error('document is not OPML');
+  return [...entries.values()];
 }
 
 function escapeXml(value) {
   return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-function decodeXml(value) {
-  return String(value || '').replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt);/gi, (whole, entity) => {
-    const lower = entity.toLowerCase();
-    if (lower === 'amp') return '&';
-    if (lower === 'quot') return '"';
-    if (lower === 'apos') return "'";
-    if (lower === 'lt') return '<';
-    if (lower === 'gt') return '>';
-    const code = lower.startsWith('#x') ? parseInt(lower.slice(2), 16) : parseInt(lower.slice(1), 10);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : whole;
-  });
 }
 
 module.exports = { subscriptionsToOpml, parseOpmlSubscriptions };
