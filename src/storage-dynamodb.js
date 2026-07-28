@@ -532,6 +532,8 @@ function streamLimit(opts) {
 
 function needsMetadataFilter(streamId, opts = {}) {
   return Boolean(
+    streamId === 'user/-/state/com.google/read' ||
+    opts.includeRead ||
     (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) ||
     (opts.includeStarred && streamId !== 'user/-/state/com.google/starred')
   );
@@ -615,6 +617,7 @@ function streamPk(streamId, opts = {}) {
 }
 
 function filterPostQuery(items, streamId, opts = {}) {
+  if (streamId === 'user/-/state/com.google/read' || opts.includeRead) items = items.filter((it) => it.read);
   if (opts.excludeRead && streamId !== 'user/-/state/com.google/reading-list' && !(streamId || '').startsWith('feed/')) {
     items = items.filter((it) => !it.read);
   }

@@ -248,12 +248,14 @@ async function getItems(ids) {
 
 function filterStreamItems(items, streamId, opts = {}) {
   if (streamId === 'user/-/state/com.google/starred') items = items.filter((it) => it.starred);
+  else if (streamId === 'user/-/state/com.google/read') items = items.filter((it) => it.read);
   else if (streamId && streamId.startsWith('feed/')) items = items.filter((it) => it.feedId === streamId.slice(5));
   else if (streamId && streamId.startsWith('user/-/label/')) {
     const label = streamId.slice('user/-/label/'.length);
     items = items.filter((it) => (it.labels || []).includes(label));
   }
   if (opts.excludeRead) items = items.filter((it) => !it.read);
+  if (opts.includeRead) items = items.filter((it) => it.read);
   if (opts.includeStarred) items = items.filter((it) => it.starred);
   if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > Number(opts.ot) * 1000000);
   if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < Number(opts.nt) * 1000000);

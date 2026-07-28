@@ -245,6 +245,7 @@ function streamOptions(params) {
     limit: Number.isFinite(requestedLimit) && requestedLimit >= 1 ? Math.floor(requestedLimit) : 20,
     order: params.get('r') || 'd',
     excludeRead: params.get('xt') === STATE.READ,
+    includeRead: params.get('it') === STATE.READ,
     includeStarred: params.get('it') === STATE.STARRED,
     ot: Number(params.get('ot') || 0),
     nt: Number(params.get('nt') || 0),
@@ -257,12 +258,14 @@ async function selectItems(streamId, opts) {
 
   let items = await storage.listItems();
   if (streamId === STATE.STARRED) items = items.filter((it) => it.starred);
+  else if (streamId === STATE.READ) items = items.filter((it) => it.read);
   else if (streamId.startsWith('feed/')) items = items.filter((it) => it.feedId === streamId.slice(5));
   else if (streamId.startsWith('user/-/label/')) {
     const label = streamId.slice('user/-/label/'.length);
     items = items.filter((it) => (it.labels || []).includes(label));
   }
   if (opts.excludeRead) items = items.filter((it) => !it.read);
+  if (opts.includeRead) items = items.filter((it) => it.read);
   if (opts.includeStarred) items = items.filter((it) => it.starred);
   if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > opts.ot * 1000000);
   if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < opts.nt * 1000000);
