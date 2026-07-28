@@ -2,10 +2,16 @@ resource "random_id" "suffix" {
   byte_length = 4
 }
 
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
 locals {
-  name        = var.project_name
-  name_suffix = "${var.project_name}-${random_id.suffix.hex}"
-  auth_secret = var.auth_secret != "" ? var.auth_secret : var.greader_password
+  name                  = var.project_name
+  name_suffix           = "${var.project_name}-${random_id.suffix.hex}"
+  crawler_function_name = "${local.name_suffix}-crawler"
+  crawler_function_arn  = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${local.crawler_function_name}"
+  auth_secret           = var.auth_secret != "" ? var.auth_secret : var.greader_password
 }
 
 resource "aws_dynamodb_table" "main" {
@@ -152,6 +158,11 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [local.crawler_function_arn]
+  }
+
+  statement {
     actions = [
       "s3:GetObject",
       "s3:PutObject"
@@ -218,14 +229,16 @@ resource "aws_lambda_function" "api" {
   memory_size      = var.api_memory_mb
 
   environment {
-    variables = local.lambda_env
+    variables = merge(local.lambda_env, {
+      LESSRSS_CRAWLER_FUNCTION = local.crawler_function_name
+    })
   }
 
   depends_on = [aws_iam_role_policy.lambda, aws_cloudwatch_log_group.api]
 }
 
 resource "aws_lambda_function" "crawler" {
-  function_name    = "${local.name_suffix}-crawler"
+  function_name    = local.crawler_function_name
   role             = aws_iam_role.lambda.arn
   runtime          = "nodejs20.x"
   handler          = "src/crawler-handler.handler"

@@ -6,7 +6,7 @@ const { json, text, xml, unauthorized, notFound, badRequest, formParams, arrayPa
 const storage = require('./storage');
 const { mapLimit } = require('./async-util');
 const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGreader, sortItems, streamTitle } = require('./greader-format');
-const { refreshAll } = require('./crawler');
+const { dispatchCrawl } = require('./crawl-dispatch');
 const { discoverFeed } = require('./feed-discovery');
 const { httpUrl, truncateUtf8 } = require('./feed-security');
 const { LABEL_PREFIX, labelName } = require('./labels');
@@ -196,7 +196,7 @@ async function subscriptionImport(req) {
     const sub = await storage.subscribe(url, truncateUtf8(entry.title || url));
     if (entry.labels.length > 0) await storage.editSubscriptionCategories(sub.feedId, entry.labels, []);
   }
-  await refreshAll().catch((e) => console.error('subscription/import: refresh failed', e.message));
+  await dispatchCrawl().catch((e) => console.error('subscription/import: crawler dispatch failed', e.message));
   return text(200, 'OK');
 }
 
