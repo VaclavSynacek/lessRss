@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { categoryFor, labelName, normalizeCategories } = require('./labels');
 
 const DATA_DIR = process.env.LESSRSS_DATA_DIR || path.join(process.cwd(), '.local-data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
@@ -125,6 +126,77 @@ async function updateSubscriptionFetchState(feedId, patch) {
   });
 }
 
+async function editSubscriptionCategories(feedId, addLabels, removeLabels) {
+  return withWriteLock(async () => {
+    const state = await loadState();
+    state.labels ||= {};
+    const sub = state.subscriptions[String(feedId)];
+    if (!sub) return null;
+    const removed = new Set((removeLabels || []).map(labelName).filter(Boolean));
+    const categories = normalizeCategories(sub.categories).filter((category) => !removed.has(category.label));
+    for (const value of addLabels || []) {
+      const category = categoryFor(value);
+      if (category && !categories.some((existing) => existing.label === category.label)) categories.push(category);
+      if (category) state.labels[category.label] = true;
+    }
+    sub.categories = categories;
+    sub.updatedAt = Date.now();
+    await saveState(state);
+    return sub;
+  });
+}
+
+async function listLabels() {
+  const state = await loadState();
+  const labels = new Set(Object.keys(state.labels || {}));
+  for (const sub of Object.values(state.subscriptions)) {
+    for (const category of normalizeCategories(sub.categories)) labels.add(category.label);
+  }
+  for (const item of Object.values(state.items)) for (const label of item.labels || []) labels.add(label);
+  return [...labels].sort((a, b) => a.localeCompare(b));
+}
+
+async function renameLabel(sourceValue, destinationValue) {
+  const source = labelName(sourceValue);
+  const destination = labelName(destinationValue);
+  if (!source || !destination || source === destination) return;
+  return withWriteLock(async () => {
+    const state = await loadState();
+    state.labels ||= {};
+    for (const sub of Object.values(state.subscriptions)) {
+      const labels = normalizeCategories(sub.categories).map((category) => category.label);
+      if (!labels.includes(source)) continue;
+      sub.categories = normalizeCategories(labels.map((label) => label === source ? destination : label));
+      sub.updatedAt = Date.now();
+    }
+    for (const item of Object.values(state.items)) {
+      if (!(item.labels || []).includes(source)) continue;
+      item.labels = [...new Set(item.labels.map((label) => label === source ? destination : label))];
+    }
+    delete state.labels[source];
+    state.labels[destination] = true;
+    await saveState(state);
+  });
+}
+
+async function disableLabel(value) {
+  const label = labelName(value);
+  if (!label) return;
+  return withWriteLock(async () => {
+    const state = await loadState();
+    state.labels ||= {};
+    for (const sub of Object.values(state.subscriptions)) {
+      const categories = normalizeCategories(sub.categories);
+      if (!categories.some((category) => category.label === label)) continue;
+      sub.categories = categories.filter((category) => category.label !== label);
+      sub.updatedAt = Date.now();
+    }
+    for (const item of Object.values(state.items)) item.labels = (item.labels || []).filter((existing) => existing !== label);
+    delete state.labels[label];
+    await saveState(state);
+  });
+}
+
 async function listItems() {
   const state = await loadState();
   return Object.values(state.items);
@@ -213,13 +285,18 @@ async function updateItems(mutator) {
 
 async function applyItemTags(ids, patch) {
   const idSet = new Set(ids.map(normalizeItemId));
-  return updateItems((items) => {
+  return updateItems((items, state) => {
+    state.labels ||= {};
     for (const item of Object.values(items)) {
       if (!idSet.has(String(item.itemId))) continue;
       if (patch.read !== undefined) item.read = patch.read;
       if (patch.starred !== undefined) item.starred = patch.starred;
       item.labels = (item.labels || []).filter((label) => !(patch.removeLabels || []).includes(label));
-      for (const label of patch.addLabels || []) if (!item.labels.includes(label)) item.labels.push(label);
+      for (const value of patch.addLabels || []) {
+        const label = labelName(value);
+        if (label && !item.labels.includes(label)) item.labels.push(label);
+        if (label) state.labels[label] = true;
+      }
     }
   });
 }
@@ -279,6 +356,10 @@ module.exports = {
   upsertItem,
   updateSubscriptionFetchState,
   setSubscriptionCustomTitle,
+  editSubscriptionCategories,
+  listLabels,
+  renameLabel,
+  disableLabel,
   normalizeItemId,
   feedIdFor,
   itemIdFor,

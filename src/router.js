@@ -9,7 +9,8 @@ const { subscriptionTitle, subscriptionHtmlUrl, subscriptionToGreader, itemToGre
 const { refreshAll } = require('./crawler');
 const { discoverFeed } = require('./feed-discovery');
 const { httpUrl, truncateUtf8 } = require('./feed-security');
-const { subscriptionsToOpml } = require('./opml');
+const { LABEL_PREFIX, labelName } = require('./labels');
+const { subscriptionsToOpml, parseOpmlSubscriptions } = require('./opml');
 
 // Cap on simultaneous S3 body fetches per stream read. Bounded to avoid
 // fanning out hundreds of connections for large n= requests while still
@@ -46,8 +47,8 @@ async function route(req) {
   if (path === '/reader/api/0/stream/items/contents' && req.method === 'POST') return streamItemsContents(req);
   if (path === '/reader/api/0/edit-tag' && req.method === 'POST') return editTag(req);
   if (path === '/reader/api/0/mark-all-as-read' && req.method === 'POST') return markAllAsRead(req);
-  if (path === '/reader/api/0/rename-tag' && req.method === 'POST') return text(200, 'OK');
-  if (path === '/reader/api/0/disable-tag' && req.method === 'POST') return text(200, 'OK');
+  if (path === '/reader/api/0/rename-tag' && req.method === 'POST') return renameTag(req);
+  if (path === '/reader/api/0/disable-tag' && req.method === 'POST') return disableTag(req);
 
   return notFound();
 }
@@ -79,14 +80,15 @@ function userInfo() {
 }
 
 async function tagList() {
-  const subs = await storage.listSubscriptions();
   const tags = [
     { id: STATE.READING_LIST, sortid: '00000001' },
     { id: STATE.STARRED, sortid: '00000002' },
   ];
-  const labels = new Set();
-  for (const sub of subs) for (const c of sub.categories || []) if (c.id) labels.add(c.id);
-  for (const label of labels) tags.push({ id: label, sortid: sortId(label), type: 'folder' });
+  const labels = await storage.listLabels();
+  for (const label of labels) {
+    const id = LABEL_PREFIX + label;
+    tags.push({ id, sortid: sortId(id), type: 'folder' });
+  }
   return json(200, { tags });
 }
 
@@ -120,7 +122,11 @@ async function subscriptionEdit(req) {
   if (ac === 'subscribe') {
     const urls = streams.map((s) => httpUrl(String(s).replace(/^feed\//, '')));
     if (urls.some((url) => !url)) return badRequest('feed URL must use HTTP or HTTPS');
-    for (const url of urls) await storage.subscribe(url, truncateUtf8(form.t));
+    const addLabels = arrayParam(form.a).map(labelName).filter(Boolean);
+    for (const url of urls) {
+      const sub = await storage.subscribe(url, truncateUtf8(form.t));
+      if (addLabels.length > 0) await storage.editSubscriptionCategories(sub.feedId, addLabels, []);
+    }
     return text(200, 'OK');
   }
   if (ac === 'unsubscribe') {
@@ -129,11 +135,17 @@ async function subscriptionEdit(req) {
   }
   if (ac === 'edit') {
     const titles = arrayParam(form.t);
+    const removeLabels = arrayParam(form.r).map(labelName).filter(Boolean);
+    const addLabels = arrayParam(form.a).map(labelName).filter((label) => label && !removeLabels.includes(label));
     for (let i = 0; i < streams.length; i += 1) {
-      if (titles.length === 0) continue;
-      const title = truncateUtf8(titles[Math.min(i, titles.length - 1)]);
       const feedId = String(streams[i]).replace(/^feed\//, '');
-      await storage.setSubscriptionCustomTitle(feedId, title);
+      if (titles.length > 0) {
+        const title = truncateUtf8(titles[Math.min(i, titles.length - 1)]);
+        await storage.setSubscriptionCustomTitle(feedId, title);
+      }
+      if (addLabels.length > 0 || removeLabels.length > 0) {
+        await storage.editSubscriptionCategories(feedId, addLabels, removeLabels);
+      }
     }
     return text(200, 'OK');
   }
@@ -172,12 +184,13 @@ async function subscriptionImport(req) {
   const contentType = req.headers['content-type'] || req.headers['Content-Type'] || '';
   let opml = req.body || '';
   if (contentType.includes('application/x-www-form-urlencoded')) opml = formParams(req.body || '').opml || '';
-  for (const m of opml.matchAll(/xmlUrl=["']([^"']+)["'][^>]*(?:title|text)=["']([^"']*)["']|(?:title|text)=["']([^"']*)["'][^>]*xmlUrl=["']([^"']+)["']/gi)) {
-    const url = httpUrl(unesc(m[1] || m[4]));
-    const title = truncateUtf8(unesc(m[2] || m[3] || url));
-    if (url) await storage.subscribe(url, title);
+  for (const entry of parseOpmlSubscriptions(opml)) {
+    const url = httpUrl(entry.url);
+    if (!url) continue;
+    const sub = await storage.subscribe(url, truncateUtf8(entry.title || url));
+    if (entry.labels.length > 0) await storage.editSubscriptionCategories(sub.feedId, entry.labels, []);
   }
-  await refreshAll().catch((e) => console.error('subscription/import: background refresh failed', e.message));
+  await refreshAll().catch((e) => console.error('subscription/import: refresh failed', e.message));
   return text(200, 'OK');
 }
 
@@ -273,14 +286,27 @@ async function markAllAsRead(req) {
   return text(200, 'OK');
 }
 
+async function renameTag(req) {
+  const form = formParams(req.body || '');
+  const source = labelName(form.s);
+  const destination = labelName(form.dest);
+  if (!source || !destination) return badRequest('missing label source or destination');
+  if (source !== destination) await storage.renameLabel(source, destination);
+  return text(200, 'OK');
+}
+
+async function disableTag(req) {
+  const form = formParams(req.body || '');
+  const labels = arrayParam(form.s).map(labelName).filter(Boolean);
+  if (labels.length === 0) return badRequest('missing label');
+  for (const label of labels) await storage.disableLabel(label);
+  return text(200, 'OK');
+}
+
 function sortId(s) {
   let n = 0;
   for (const ch of String(s)) n = ((n * 31) + ch.charCodeAt(0)) >>> 0;
   return n.toString(16).padStart(8, '0');
-}
-
-function unesc(s) {
-  return String(s || '').replace(/&quot;/g, '"').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
 }
 
 module.exports = { route };

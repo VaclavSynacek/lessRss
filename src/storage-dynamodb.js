@@ -5,6 +5,7 @@ const { BatchGetCommand, GetCommand, PutCommand, UpdateCommand, QueryCommand, De
 const { documentClient, tableName } = require('./dynamodb-client');
 const { mapLimit } = require('./async-util');
 const { deleteBody } = require('./body-store');
+const { categoryFor, labelName, normalizeCategories } = require('./labels');
 
 const ddb = documentClient();
 const TableName = tableName();
@@ -128,6 +129,74 @@ async function updateSubscriptionFetchState(feedId, patch) {
   return updateSubscriptionFields(feedId, Object.fromEntries(
     Object.entries(patch).filter(([key]) => allowed.includes(key))
   ));
+}
+
+async function editSubscriptionCategories(feedId, addLabels, removeLabels) {
+  const sub = await getSubscription(feedId);
+  if (!sub) return null;
+  const removed = new Set((removeLabels || []).map(labelName).filter(Boolean));
+  const categories = normalizeCategories(sub.categories).filter((category) => !removed.has(category.label));
+  for (const value of addLabels || []) {
+    const category = categoryFor(value);
+    if (category && !categories.some((existing) => existing.label === category.label)) categories.push(category);
+  }
+  await registerLabels(categories.map((category) => category.label));
+  return updateSubscriptionFields(feedId, { categories });
+}
+
+async function listLabels() {
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+    ExpressionAttributeValues: { ':pk': 'USER', ':sk': 'LABEL#' },
+    ProjectionExpression: 'label',
+  });
+  const labels = new Set(rows.map((row) => labelName(row.label)).filter(Boolean));
+  for (const sub of await listSubscriptions()) {
+    for (const category of normalizeCategories(sub.categories)) labels.add(category.label);
+  }
+  return [...labels].sort((a, b) => a.localeCompare(b));
+}
+
+async function registerLabels(labels) {
+  const normalized = [...new Set((labels || []).map(labelName).filter(Boolean))];
+  await mapLimit(normalized, 20, (label) => putEntity('USER', 'LABEL#' + label, 'label', { label }));
+}
+
+async function renameLabel(sourceValue, destinationValue) {
+  const source = labelName(sourceValue);
+  const destination = labelName(destinationValue);
+  if (!source || !destination || source === destination) return;
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': 'STREAM#LABEL#' + source },
+    ProjectionExpression: 'itemId',
+  });
+  await applyItemTags(rows.map((row) => row.itemId), { addLabels: [destination], removeLabels: [source] });
+  const affected = (await listSubscriptions()).filter((sub) => (
+    normalizeCategories(sub.categories).some((category) => category.label === source)
+  ));
+  await mapLimit(affected, 20, (sub) => editSubscriptionCategories(sub.feedId, [destination], [source]));
+  await registerLabels([destination]);
+  await deleteKey('USER', 'LABEL#' + source);
+}
+
+async function disableLabel(value) {
+  const label = labelName(value);
+  if (!label) return;
+  const rows = await queryAll({
+    TableName,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': 'STREAM#LABEL#' + label },
+    ProjectionExpression: 'itemId',
+  });
+  await applyItemTags(rows.map((row) => row.itemId), { removeLabels: [label] });
+  const affected = (await listSubscriptions()).filter((sub) => (
+    normalizeCategories(sub.categories).some((category) => category.label === label)
+  ));
+  await mapLimit(affected, 20, (sub) => editSubscriptionCategories(sub.feedId, [], [label]));
+  await deleteKey('USER', 'LABEL#' + label);
 }
 
 async function updateSubscriptionFields(feedId, patch) {
@@ -255,6 +324,7 @@ function sleep(ms) {
 }
 
 async function applyItemTags(ids, patch) {
+  await registerLabels(patch.addLabels || []);
   const uniqueIds = [...new Set(ids.map(normalizeItemId))];
   const current = await getItems(uniqueIds);
   const changes = [];
@@ -558,6 +628,10 @@ module.exports = {
   upsertItem,
   updateSubscriptionFetchState,
   setSubscriptionCustomTitle,
+  editSubscriptionCategories,
+  listLabels,
+  renameLabel,
+  disableLabel,
   normalizeItemId,
   feedIdFor,
   itemIdFor,
