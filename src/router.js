@@ -201,26 +201,32 @@ async function subscriptionImport(req) {
 }
 
 async function streamContents(streamId, params) {
-  const items = await selectItems(streamId, params);
+  const opts = streamOptions(params);
+  const items = await selectItems(streamId, opts);
   const subs = await storage.listSubscriptions();
   const subMap = new Map(subs.map((s) => [s.feedId, s]));
   // Fan out S3 body fetches in parallel; each itemToGreader awaits getBody(),
   // so serial iteration made latency scale with item count (n defaults to 20).
   const out = await mapLimit(items, BODY_FETCH_CONCURRENCY, (item) => itemToGreader(item, subMap.get(item.feedId)));
-  return json(200, {
+  const response = {
     id: streamId,
     title: streamTitle(streamId),
     updated: Math.floor(Date.now() / 1000),
-    direction: params.get('r') === 'o' ? 'ltr' : 'rtl',
+    direction: opts.order === 'o' ? 'ltr' : 'rtl',
     self: [{ href: streamId }],
     items: out,
-  });
+  };
+  if (items.length >= opts.limit) response.continuation = String(items[items.length - 1].itemId);
+  return json(200, response);
 }
 
 async function streamItemIds(params) {
   const streamId = params.get('s') || STATE.READING_LIST;
-  const ids = await storage.listStreamItemIds(streamId, streamOptions(params));
-  return json(200, { itemRefs: ids.map((id) => ({ id: String(id) })) });
+  const opts = streamOptions(params);
+  const ids = await storage.listStreamItemIds(streamId, opts);
+  const response = { itemRefs: ids.map((id) => ({ id: String(id) })) };
+  if (ids.length >= opts.limit) response.continuation = String(ids[ids.length - 1]);
+  return json(200, response);
 }
 
 async function streamItemsContents(req) {
@@ -234,18 +240,19 @@ async function streamItemsContents(req) {
 }
 
 function streamOptions(params) {
+  const requestedLimit = Number(params.get('n') || 20);
   return {
-    limit: Number(params.get('n') || 20),
+    limit: Number.isFinite(requestedLimit) && requestedLimit >= 1 ? Math.floor(requestedLimit) : 20,
     order: params.get('r') || 'd',
     excludeRead: params.get('xt') === STATE.READ,
     includeStarred: params.get('it') === STATE.STARRED,
     ot: Number(params.get('ot') || 0),
     nt: Number(params.get('nt') || 0),
+    continuation: params.get('c') || '',
   };
 }
 
-async function selectItems(streamId, params) {
-  const opts = streamOptions(params);
+async function selectItems(streamId, opts) {
   if (storage.listStreamItems) return storage.listStreamItems(streamId, opts);
 
   let items = await storage.listItems();
@@ -260,7 +267,12 @@ async function selectItems(streamId, params) {
   if (opts.ot) items = items.filter((it) => Number(it.publishedUsec || 0) > opts.ot * 1000000);
   if (opts.nt) items = items.filter((it) => Number(it.publishedUsec || 0) < opts.nt * 1000000);
   items = sortItems(items, opts.order);
-  return items.slice(0, Number.isFinite(opts.limit) && opts.limit > 0 ? opts.limit : 20);
+  if (opts.continuation) {
+    const cursor = storage.normalizeItemId(opts.continuation);
+    const index = items.findIndex((item) => String(item.itemId) === cursor);
+    items = index < 0 ? [] : items.slice(index + 1);
+  }
+  return items.slice(0, opts.limit);
 }
 
 async function editTag(req) {

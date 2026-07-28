@@ -206,8 +206,13 @@ async function listStreamItems(streamId, opts = {}) {
   let items = await listItems();
   items = filterStreamItems(items, streamId, opts);
   items = sortStreamItems(items, opts.order);
+  if (opts.continuation) {
+    const cursor = normalizeItemId(opts.continuation);
+    const index = items.findIndex((item) => String(item.itemId) === cursor);
+    items = index < 0 ? [] : items.slice(index + 1);
+  }
   const limit = Number(opts.limit || 20);
-  return items.slice(0, Number.isFinite(limit) && limit > 0 ? limit : 20);
+  return items.slice(0, Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20);
 }
 
 async function listStreamItemIds(streamId, opts = {}) {

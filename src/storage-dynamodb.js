@@ -244,20 +244,38 @@ async function listItems() {
 
 async function listStreamItems(streamId, opts = {}) {
   const safeLimit = streamLimit(opts);
-  const queryLimit = needsMetadataFilter(streamId, opts)
-    ? Math.min(1000, Math.max(safeLimit, safeLimit * 5))
-    : safeLimit;
-  const rows = await queryStreamRows(streamId, opts, queryLimit);
-  let items = await getItems(rows.map((row) => row.itemId));
-  items = filterPostQuery(items, streamId, opts);
-  return items.slice(0, safeLimit);
+  const input = streamQueryInput(streamId, opts);
+  if (!input) return [];
+  const startKey = await continuationStartKey(streamId, opts);
+  if (startKey === null) return [];
+
+  const items = [];
+  let ExclusiveStartKey = startKey;
+  do {
+    const remaining = safeLimit - items.length;
+    const candidateLimit = needsMetadataFilter(streamId, opts)
+      ? Math.min(100, Math.max(20, remaining * 5))
+      : remaining;
+    const res = await ddb.send(new QueryCommand({
+      ...input,
+      Limit: candidateLimit,
+      ExclusiveStartKey,
+    }));
+    let candidates = await getItems((res.Items || []).map((row) => row.itemId));
+    candidates = filterPostQuery(candidates, streamId, opts);
+    items.push(...candidates.slice(0, remaining));
+    ExclusiveStartKey = res.LastEvaluatedKey;
+  } while (items.length < safeLimit && ExclusiveStartKey);
+  return items;
 }
 
 async function listStreamItemIds(streamId, opts = {}) {
   if (needsMetadataFilter(streamId, opts)) {
     return (await listStreamItems(streamId, opts)).map((item) => String(item.itemId));
   }
-  const rows = await queryStreamRows(streamId, opts, streamLimit(opts));
+  const startKey = await continuationStartKey(streamId, opts);
+  if (startKey === null) return [];
+  const rows = await queryStreamRows(streamId, opts, streamLimit(opts), startKey);
   return rows.map((row) => String(row.itemId));
 }
 
@@ -509,7 +527,7 @@ function indexSortKey(item) {
 
 function streamLimit(opts) {
   const limit = Number(opts.limit || 20);
-  return Number.isFinite(limit) && limit > 0 ? limit : 20;
+  return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 20;
 }
 
 function needsMetadataFilter(streamId, opts = {}) {
@@ -519,9 +537,16 @@ function needsMetadataFilter(streamId, opts = {}) {
   );
 }
 
-async function queryStreamRows(streamId, opts, limit) {
+async function continuationStartKey(streamId, opts) {
+  if (!opts.continuation) return undefined;
+  const item = await getItem(opts.continuation);
+  if (!item) return null;
+  return { PK: streamPk(streamId, opts), SK: indexSortKey(item) };
+}
+
+function streamQueryInput(streamId, opts) {
   const range = streamTimeRange(opts);
-  if (range.empty) return [];
+  if (range.empty) return null;
   const values = { ':pk': streamPk(streamId, opts) };
   let condition = 'PK = :pk';
   if (range.lower && range.upper) {
@@ -535,14 +560,19 @@ async function queryStreamRows(streamId, opts, limit) {
     condition += ' AND SK <= :upper';
     values[':upper'] = range.upper;
   }
-  return queryAll({
+  return {
     TableName,
     KeyConditionExpression: condition,
     ExpressionAttributeValues: values,
     ProjectionExpression: 'itemId',
     ScanIndexForward: opts.order === 'o' ? false : true,
-    Limit: limit,
-  });
+  };
+}
+
+async function queryStreamRows(streamId, opts, limit, ExclusiveStartKey) {
+  const input = streamQueryInput(streamId, opts);
+  if (!input) return [];
+  return queryAll({ ...input, Limit: limit, ExclusiveStartKey });
 }
 
 function streamTimeRange(opts = {}) {
@@ -599,7 +629,7 @@ function stripKeys(row) {
 
 async function queryAll(input) {
   const out = [];
-  let ExclusiveStartKey;
+  let ExclusiveStartKey = input.ExclusiveStartKey;
   const hardCap = Number(input.Limit) || Infinity;
   do {
     const res = await ddb.send(new QueryCommand({ ...input, ExclusiveStartKey }));
