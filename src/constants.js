@@ -1,5 +1,7 @@
 'use strict';
 
+const ITEM_RETENTION_SECONDS = 365 * 24 * 60 * 60;
+
 const STATE = {
   READ: 'user/-/state/com.google/read',
   UNREAD: 'user/-/state/com.google/unread',
@@ -12,4 +14,4 @@ const STATE = {
   FRSS_IMPORTANT: 'user/-/state/org.freshrss/important',
 };
 
-module.exports = { STATE };
+module.exports = { ITEM_RETENTION_SECONDS, STATE };

@@ -6,11 +6,11 @@ const { documentClient, tableName } = require('./dynamodb-client');
 const { mapLimit } = require('./async-util');
 const { deleteBody } = require('./body-store');
 const { categoryFor, labelName, normalizeCategories } = require('./labels');
+const { ITEM_RETENTION_SECONDS } = require('./constants');
 
 const ddb = documentClient();
 const TableName = tableName();
 const MAX_INDEX_TIMESTAMP = 9999999999999999n;
-const ITEM_RETENTION_SECONDS = 365 * 24 * 60 * 60;
 
 function hashHex(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex');

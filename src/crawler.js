@@ -6,6 +6,7 @@ const { mapLimit } = require('./async-util');
 const storage = require('./storage');
 const { putBody } = require('./body-store');
 const { absoluteUrl, sanitizeArticleHtml } = require('./html-sanitize');
+const { ITEM_RETENTION_SECONDS } = require('./constants');
 const {
   MAX_FEED_BYTES,
   MAX_REDIRECTS,
@@ -145,9 +146,11 @@ async function refreshItem(sub, parsedItem, feedHtmlUrl = '') {
   const guid = parsedItem.guid || itemUrl || parsedItem.title;
   if (!guid) return 'ignored';
 
+  const publishedMs = parsedItem.pubDate ? Date.parse(parsedItem.pubDate) : NaN;
+  if (pastRetentionWindow(publishedMs)) return 'ignored';
+
   const itemId = storage.itemIdFor(sub.feedId, guid);
   const old = storage.getItem ? await storage.getItem(itemId) : (await storage.getItems([itemId]))[0] || null;
-  const publishedMs = parsedItem.pubDate ? Date.parse(parsedItem.pubDate) : NaN;
   const stableBody = bodyFor(parsedItem, itemUrl, feedHtmlUrl || sub.htmlUrl || sub.url);
   const body = { ...stableBody, fetchedAt: new Date().toISOString() };
   const bodyHash = hashJson(stableBody);
@@ -171,6 +174,12 @@ async function refreshItem(sub, parsedItem, feedHtmlUrl = '') {
   if (!old || old.bodyHash !== bodyHash || old.bodyKey !== bodyKey) await putBody(bodyKey, body);
   await storage.upsertItem(sub.feedId, next);
   return 'written';
+}
+
+function pastRetentionWindow(publishedMs, nowMs = Date.now()) {
+  if (!Number.isFinite(publishedMs)) return false;
+  const expiresAt = Math.floor(publishedMs / 1000) + ITEM_RETENTION_SECONDS;
+  return expiresAt <= Math.floor(nowMs / 1000);
 }
 
 function bodyFor(parsedItem, itemUrl, feedHtmlUrl) {
