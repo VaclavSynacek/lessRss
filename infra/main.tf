@@ -10,7 +10,7 @@ locals {
   name                  = var.project_name
   name_suffix           = "${var.project_name}-${random_id.suffix.hex}"
   crawler_function_name = "${local.name_suffix}-crawler"
-  crawler_function_arn  = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${local.crawler_function_name}"
+  crawler_function_arn  = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${local.crawler_function_name}"
   auth_secret           = var.auth_secret != "" ? var.auth_secret : var.greader_password
 }
 
