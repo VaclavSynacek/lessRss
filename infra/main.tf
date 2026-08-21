@@ -221,7 +221,7 @@ locals {
 resource "aws_lambda_function" "api" {
   function_name    = "${local.name_suffix}-api"
   role             = aws_iam_role.lambda.arn
-  runtime          = "nodejs20.x"
+  runtime          = "nodejs24.x"
   handler          = "src/handler.handler"
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
@@ -240,7 +240,7 @@ resource "aws_lambda_function" "api" {
 resource "aws_lambda_function" "crawler" {
   function_name    = local.crawler_function_name
   role             = aws_iam_role.lambda.arn
-  runtime          = "nodejs20.x"
+  runtime          = "nodejs24.x"
   handler          = "src/crawler-handler.handler"
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
