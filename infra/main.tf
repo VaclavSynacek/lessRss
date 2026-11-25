@@ -11,7 +11,6 @@ locals {
   name_suffix           = "${var.project_name}-${random_id.suffix.hex}"
   crawler_function_name = "${local.name_suffix}-crawler"
   crawler_function_arn  = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${local.crawler_function_name}"
-  auth_secret           = var.auth_secret != "" ? var.auth_secret : var.greader_password
 }
 
 resource "aws_dynamodb_table" "main" {
@@ -124,17 +123,12 @@ resource "aws_iam_role" "lambda" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-data "aws_iam_policy_document" "lambda" {
-  statement {
-    actions = [
-      "logs:CreateLogStream",
-      "logs:PutLogEvents"
-    ]
-    resources = [
-      "${aws_cloudwatch_log_group.api.arn}:*",
-      "${aws_cloudwatch_log_group.crawler.arn}:*"
-    ]
-  }
+resource "aws_iam_role" "crawler" {
+  name               = "${local.name_suffix}-crawler"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+data "aws_iam_policy_document" "storage" {
 
   statement {
     actions = [
@@ -157,11 +151,32 @@ data "aws_iam_policy_document" "lambda" {
     resources = ["${aws_s3_bucket.bodies.arn}/*"]
   }
 
+}
+
+data "aws_iam_policy_document" "lambda" {
+  source_policy_documents = [data.aws_iam_policy_document.storage.json]
+  statement {
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.api.arn}:*"]
+  }
   statement {
     actions   = ["lambda:InvokeFunction"]
     resources = [local.crawler_function_arn]
   }
 
+}
+
+resource "aws_iam_role_policy" "crawler" {
+  role   = aws_iam_role.crawler.id
+  policy = data.aws_iam_policy_document.crawler.json
+}
+
+data "aws_iam_policy_document" "crawler" {
+  source_policy_documents = [data.aws_iam_policy_document.storage.json]
+  statement {
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.crawler.arn}:*"]
+  }
   statement {
     actions = [
       "s3:GetObject",
@@ -208,12 +223,8 @@ locals {
     LESSRSS_DDB_TABLE           = aws_dynamodb_table.main.name
     LESSRSS_BODY_STORE          = "s3"
     LESSRSS_BODY_BUCKET         = aws_s3_bucket.bodies.bucket
-    LESSRSS_OPML_BACKUP_BUCKET  = aws_s3_bucket.opml_backup.bucket
     LESSRSS_CRAWLER_CONCURRENCY = tostring(var.crawler_concurrency)
     LESSRSS_FEED_TIMEOUT_MS     = tostring(var.crawler_feed_timeout_ms)
-    GREADER_USER                = var.greader_user
-    GREADER_PASSWORD            = var.greader_password
-    LESSRSS_AUTH_SECRET         = local.auth_secret
     NODE_OPTIONS                = "--enable-source-maps"
   }
 }
@@ -230,6 +241,9 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = merge(local.lambda_env, {
+      GREADER_USER             = var.greader_user
+      GREADER_PASSWORD         = var.greader_password
+      LESSRSS_AUTH_SECRET      = var.auth_secret
       LESSRSS_CRAWLER_FUNCTION = local.crawler_function_name
     })
   }
@@ -239,7 +253,7 @@ resource "aws_lambda_function" "api" {
 
 resource "aws_lambda_function" "crawler" {
   function_name    = local.crawler_function_name
-  role             = aws_iam_role.lambda.arn
+  role             = aws_iam_role.crawler.arn
   runtime          = "nodejs24.x"
   handler          = "src/crawler-handler.handler"
   filename         = data.archive_file.lambda.output_path
@@ -248,10 +262,10 @@ resource "aws_lambda_function" "crawler" {
   memory_size      = var.crawler_memory_mb
 
   environment {
-    variables = local.lambda_env
+    variables = merge(local.lambda_env, { LESSRSS_OPML_BACKUP_BUCKET = aws_s3_bucket.opml_backup.bucket })
   }
 
-  depends_on = [aws_iam_role_policy.lambda, aws_cloudwatch_log_group.crawler]
+  depends_on = [aws_iam_role_policy.crawler, aws_cloudwatch_log_group.crawler]
 }
 
 resource "aws_lambda_function_url" "api" {
@@ -268,10 +282,11 @@ resource "aws_lambda_permission" "function_url" {
 }
 
 resource "aws_lambda_permission" "function_url_invoke" {
-  statement_id  = "AllowPublicFunctionUrlInvokeFunction"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.api.function_name
-  principal     = "*"
+  invoked_via_function_url = true
+  statement_id             = "AllowPublicFunctionUrlInvokeFunction"
+  action                   = "lambda:InvokeFunction"
+  function_name            = aws_lambda_function.api.function_name
+  principal                = "*"
 }
 
 resource "aws_cloudwatch_event_rule" "crawler" {

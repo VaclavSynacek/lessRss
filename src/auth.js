@@ -2,16 +2,26 @@
 
 const crypto = require('node:crypto');
 
+function required(name, alias) {
+  const value = process.env[name] || (alias && process.env[alias]);
+  if (!value || !value.trim()) throw new Error(`Missing required configuration: ${name}`);
+  return value;
+}
+
+const user = required('GREADER_USER', 'LESSRSS_USER');
+const password = required('GREADER_PASSWORD', 'LESSRSS_PASSWORD');
+const signingSecret = required('LESSRSS_AUTH_SECRET');
+
 function configuredUser() {
-  return process.env.GREADER_USER || process.env.LESSRSS_USER || 'alice';
+  return user;
 }
 
 function configuredPassword() {
-  return process.env.GREADER_PASSWORD || process.env.LESSRSS_PASSWORD || 'secret';
+  return password;
 }
 
 function secret() {
-  return process.env.LESSRSS_AUTH_SECRET || process.env.GREADER_PASSWORD || process.env.LESSRSS_PASSWORD || 'dev-secret';
+  return signingSecret;
 }
 
 function authTokenFor(user) {

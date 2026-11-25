@@ -7,19 +7,33 @@ variable "project_name" {
 variable "greader_user" {
   type        = string
   description = "Single Google Reader API username."
+  nullable    = false
+  validation {
+    condition     = trimspace(var.greader_user) != ""
+    error_message = "Provide a non-empty username."
+  }
 }
 
 variable "greader_password" {
   type        = string
   description = "Single Google Reader API password."
-  sensitive   = true
+  nullable    = false
+  validation {
+    condition     = trimspace(var.greader_password) != ""
+    error_message = "Provide a non-empty password."
+  }
+  sensitive = true
 }
 
 variable "auth_secret" {
   type        = string
-  description = "HMAC secret for auth/post tokens. Defaults to greader_password if empty."
+  description = "Independent HMAC secret for auth/post tokens."
   sensitive   = true
-  default     = ""
+  nullable    = false
+  validation {
+    condition     = trimspace(var.auth_secret) != ""
+    error_message = "Provide a non-empty signing secret."
+  }
 }
 
 variable "crawler_schedule_expression" {
